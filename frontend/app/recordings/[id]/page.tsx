@@ -305,7 +305,13 @@ export default function RecordingDetailPage({ params }: Props) {
   }
 
   return (
-    <section className="mx-auto max-w-4xl space-y-5">
+    <section className="mx-auto max-w-[66rem] space-y-5">
+      <div>
+        <Button asChild variant="outline" size="sm">
+          <a href="/dashboard">대시보드로 돌아가기</a>
+        </Button>
+      </div>
+
       <div className="relative rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2">
@@ -389,7 +395,7 @@ export default function RecordingDetailPage({ params }: Props) {
             <>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <p className="mb-3 text-xs font-semibold text-slate-500">요약</p>
-                <div className="mx-auto max-w-3xl">
+                <div className="mx-auto max-w-none">
                   <MarkdownPreview markdown={summary.summary_md} className="space-y-4 text-base leading-8" />
                 </div>
               </div>
@@ -451,7 +457,7 @@ export default function RecordingDetailPage({ params }: Props) {
           </div>
 
           {transcript ? (
-            <div className="mx-auto max-w-3xl space-y-3">
+            <div className="mx-auto max-w-none space-y-3">
               {transcript.segments.map((segment, idx) => (
                 <button
                   key={`${segment.start_ms}-${idx}`}
@@ -587,7 +593,7 @@ export default function RecordingDetailPage({ params }: Props) {
                 placeholder="메모를 입력하세요"
               />
             ) : noteMd.trim() ? (
-              <div className="mx-auto max-w-3xl">
+              <div className="mx-auto max-w-none">
                 <MarkdownPreview markdown={noteMd} className="space-y-3 text-[15px] leading-8" />
               </div>
             ) : (
