@@ -305,8 +305,8 @@ export default function RecordingDetailPage({ params }: Props) {
   }
 
   return (
-    <section className="space-y-5">
-      <div className="relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <section className="mx-auto max-w-4xl space-y-5">
+      <div className="relative rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2">
             <h1 className="text-2xl font-semibold">{recording?.title?.trim() || `Recording ${params.id}`}</h1>
@@ -384,12 +384,12 @@ export default function RecordingDetailPage({ params }: Props) {
       </div>
 
       {tab === "summary" ? (
-        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           {summary ? (
             <>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <p className="mb-3 text-xs font-semibold text-slate-500">요약</p>
-                <div className="mx-auto max-w-4xl">
+                <div className="mx-auto max-w-3xl">
                   <MarkdownPreview markdown={summary.summary_md} className="space-y-4 text-base leading-8" />
                 </div>
               </div>
@@ -437,7 +437,7 @@ export default function RecordingDetailPage({ params }: Props) {
       ) : null}
 
       {tab === "transcript" ? (
-        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={showSpeaker} onChange={(event) => setShowSpeaker(event.target.checked)} />
@@ -451,7 +451,7 @@ export default function RecordingDetailPage({ params }: Props) {
           </div>
 
           {transcript ? (
-            <div className="mx-auto max-w-4xl space-y-3">
+            <div className="mx-auto max-w-3xl space-y-3">
               {transcript.segments.map((segment, idx) => (
                 <button
                   key={`${segment.start_ms}-${idx}`}
@@ -491,7 +491,7 @@ export default function RecordingDetailPage({ params }: Props) {
       ) : null}
 
       {tab === "qa" ? (
-        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="max-h-[560px] space-y-5 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
             {qaTurns.length === 0 ? <p className="text-sm text-slate-600">아직 대화가 없습니다. 질문을 입력해 시작하세요.</p> : null}
 
@@ -556,7 +556,7 @@ export default function RecordingDetailPage({ params }: Props) {
       ) : null}
 
       {tab === "memo" ? (
-        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex gap-1 rounded-md border border-slate-200 p-1">
               <button
@@ -587,7 +587,7 @@ export default function RecordingDetailPage({ params }: Props) {
                 placeholder="메모를 입력하세요"
               />
             ) : noteMd.trim() ? (
-              <div className="mx-auto max-w-4xl">
+              <div className="mx-auto max-w-3xl">
                 <MarkdownPreview markdown={noteMd} className="space-y-3 text-[15px] leading-8" />
               </div>
             ) : (
