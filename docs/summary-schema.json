@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RecordingSummary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title",
+    "one_liner",
+    "topics",
+    "key_points",
+    "decisions",
+    "action_items",
+    "timeline",
+    "open_questions"
+  ],
+  "properties": {
+    "title": { "type": "string" },
+    "one_liner": { "type": "string" },
+    "topics": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "key_points": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "decisions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task", "owner", "due"],
+        "properties": {
+          "task": { "type": "string" },
+          "owner": { "type": ["string", "null"] },
+          "due": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["t_start_sec", "t_end_sec", "summary"],
+        "properties": {
+          "t_start_sec": { "type": "integer", "minimum": 0 },
+          "t_end_sec": { "type": "integer", "minimum": 0 },
+          "summary": { "type": "string" }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
