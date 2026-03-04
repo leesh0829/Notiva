@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.recordings import router as recordings_router
@@ -10,9 +11,26 @@ from app.db.base import Base
 from app.db.session import engine
 
 
+def _ensure_sqlite_columns() -> None:
+    if not settings.database_url.startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(recordings)")).all()
+        columns = {row[1] for row in rows}
+        if "is_favorite" not in columns:
+            conn.execute(text("ALTER TABLE recordings ADD COLUMN is_favorite BOOLEAN NOT NULL DEFAULT 0"))
+        if "folder_name" not in columns:
+            conn.execute(text("ALTER TABLE recordings ADD COLUMN folder_name VARCHAR(120)"))
+        if "note_md" not in columns:
+            conn.execute(text("ALTER TABLE recordings ADD COLUMN note_md TEXT NOT NULL DEFAULT ''"))
+        if "deleted_at" not in columns:
+            conn.execute(text("ALTER TABLE recordings ADD COLUMN deleted_at DATETIME"))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_columns()
     yield
 
 

@@ -1,4 +1,4 @@
-﻿export type RecordingStatus =
+export type RecordingStatus =
   | "uploaded"
   | "transcribing"
   | "transcribed"
@@ -7,14 +7,21 @@
   | "ready"
   | "failed";
 
+export type DashboardView = "all" | "favorite" | "trash";
+export type SortOrder = "newest" | "oldest";
+
 export interface Recording {
   id: string;
   title?: string | null;
   source: string;
   status: RecordingStatus;
   progress: number;
+  is_favorite: boolean;
+  folder_name?: string | null;
+  note_md?: string;
   duration_ms?: number | null;
   error_message?: string | null;
+  deleted_at?: string | null;
   created_at: string;
 }
 
@@ -26,6 +33,7 @@ export interface TranscriptSegment {
   start_ms: number;
   end_ms: number;
   text: string;
+  speaker?: string | null;
 }
 
 export interface TranscriptResponse {
@@ -75,4 +83,36 @@ export interface QATurn {
 
 export interface QAHistoryResponse {
   items: QATurn[];
+}
+
+export interface FolderItem {
+  name: string;
+  count: number;
+}
+
+export interface FolderListResponse {
+  items: FolderItem[];
+}
+
+export interface RecordingUsageItem {
+  recording_id: string;
+  title?: string | null;
+  created_at: string;
+  stt_tokens: number;
+  summary_tokens: number;
+  embedding_tokens: number;
+  qa_input_tokens: number;
+  qa_output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+}
+
+export interface RecordingUsageResponse {
+  budget_tokens: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  budget_usd: number;
+  used_usd: number;
+  remaining_usd: number;
+  items: RecordingUsageItem[];
 }

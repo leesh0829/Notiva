@@ -33,6 +33,8 @@ node_modules/
 frontend/node_modules/
 .next/
 frontend/.next/
+frontend/.next-dev/
+frontend/.next-build/
 out/
 frontend/out/
 *.tsbuildinfo

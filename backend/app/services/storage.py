@@ -56,3 +56,14 @@ def read_object_bytes(bucket: str, key: str) -> bytes:
     if not source.exists():
         raise FileNotFoundError(f"Object not found: {bucket}/{key}")
     return source.read_bytes()
+
+
+def delete_object(bucket: str, key: str) -> None:
+    if settings.s3_enabled:
+        client = _build_s3_client()
+        client.delete_object(Bucket=bucket, Key=key)
+        return
+
+    source = Path(settings.local_storage_dir) / bucket / key
+    if source.exists():
+        source.unlink()
