@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Download, MoreHorizontal } from "lucide-react";
 
 import { MarkdownPreview } from "@/components/markdown-preview";
@@ -11,6 +12,8 @@ import {
   getQaMessages,
   getRecording,
   getRecordingAudioBlob,
+  hasStoredToken,
+  isAuthRequiredError,
   getSummary,
   getTranscript,
   updateRecordingNote,
@@ -165,6 +168,7 @@ async function downloadPdfExport(filenameBase: string, content: string): Promise
 }
 
 export default function RecordingDetailPage({ params }: Props) {
+  const router = useRouter();
   const [recording, setRecording] = useState<Recording | null>(null);
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [transcript, setTranscript] = useState<TranscriptResponse | null>(null);
@@ -181,10 +185,21 @@ export default function RecordingDetailPage({ params }: Props) {
   const [showTimestamp, setShowTimestamp] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (!hasStoredToken()) {
+      router.replace("/login");
+      return;
+    }
+    setAuthReady(true);
+  }, [router]);
+
+  useEffect(() => {
+    if (!authReady) return;
+
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
     let localAudioUrl: string | null = null;
@@ -222,6 +237,10 @@ export default function RecordingDetailPage({ params }: Props) {
 
         timer = setTimeout(load, 2500);
       } catch (err) {
+        if (isAuthRequiredError(err)) {
+          router.replace("/login");
+          return;
+        }
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.");
         }
@@ -236,7 +255,7 @@ export default function RecordingDetailPage({ params }: Props) {
         URL.revokeObjectURL(localAudioUrl);
       }
     };
-  }, [params.id]);
+  }, [authReady, params.id, router]);
 
   const canAsk = useMemo(() => recording?.status === "ready", [recording?.status]);
 
@@ -258,6 +277,10 @@ export default function RecordingDetailPage({ params }: Props) {
       setQaTurns(history.items);
       setTab("qa");
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
       setQuestion(asked);
       setError(err instanceof Error ? err.message : "질문 처리에 실패했습니다.");
     } finally {
@@ -272,6 +295,10 @@ export default function RecordingDetailPage({ params }: Props) {
       const updated = await updateRecordingNote(params.id, noteMd);
       setRecording(updated);
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
       setError(err instanceof Error ? err.message : "메모 저장에 실패했습니다.");
     } finally {
       setSavingNote(false);
@@ -292,10 +319,18 @@ export default function RecordingDetailPage({ params }: Props) {
       const updated = await updateTranscriptSegments(params.id, nextSegments);
       setTranscript(updated);
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
       setError(err instanceof Error ? err.message : "화자 수정에 실패했습니다.");
     } finally {
       setSavingSpeaker(false);
     }
+  }
+
+  if (!authReady) {
+    return <p className="text-sm text-slate-600">인증 확인 중...</p>;
   }
 
   function onJump(ms: number) {

@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { UploadRecorder } from "@/components/upload-recorder";
 import { Button } from "@/components/ui/button";
 import { MarkdownPreview } from "@/components/markdown-preview";
-import { createRecording } from "@/lib/api";
+import { createRecording, hasStoredToken, isAuthRequiredError } from "@/lib/api";
 
 type MemoTab = "write" | "view";
 
@@ -19,7 +19,16 @@ export default function NewRecordingPage() {
   const [source, setSource] = useState<"upload" | "web_record">("upload");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const router = useRouter();
+
+  useEffect(() => {
+    if (!hasStoredToken()) {
+      router.replace("/login");
+      return;
+    }
+    setAuthReady(true);
+  }, [router]);
 
   async function onSubmit() {
     if (!file) {
@@ -38,10 +47,18 @@ export default function NewRecordingPage() {
       });
       router.push(`/recordings/${created.id}`);
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
       setError(err instanceof Error ? err.message : "업로드에 실패했습니다.");
     } finally {
       setLoading(false);
     }
+  }
+
+  if (!authReady) {
+    return <p className="text-sm text-slate-600">인증 확인 중...</p>;
   }
 
   return (
