@@ -5,6 +5,7 @@ from enum import Enum
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     JSON,
     DateTime,
     ForeignKey,
@@ -69,6 +70,10 @@ class Recording(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=RecordingStatus.UPLOADED.value, nullable=False)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    folder_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    note_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

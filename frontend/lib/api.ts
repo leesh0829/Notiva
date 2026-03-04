@@ -1,10 +1,15 @@
 import type {
+  DashboardView,
+  FolderListResponse,
   QAHistoryResponse,
   QAResponse,
   Recording,
   RecordingListResponse,
+  RecordingUsageResponse,
+  SortOrder,
   SummaryResponse,
   TranscriptResponse,
+  TranscriptSegment,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -39,17 +44,19 @@ async function ensureToken(): Promise<string> {
   return payload.access_token;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const token = await ensureToken();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
-
-  const response = await fetch(`${API_BASE}${path}`, {
+  return fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
     cache: "no-store",
   });
+}
 
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await authedFetch(path, init);
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || `HTTP ${response.status}`);
@@ -60,6 +67,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  const response = await authedFetch(path, init);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `HTTP ${response.status}`);
+  }
+  return response.blob();
+}
+
 export async function listRecordings(limit = 50): Promise<RecordingListResponse> {
   return request<RecordingListResponse>(`/recordings?limit=${limit}`);
 }
@@ -68,7 +84,9 @@ export async function listRecordingsWithOptions(options: {
   limit?: number;
   offset?: number;
   q?: string;
-  sort?: "newest" | "oldest";
+  sort?: SortOrder;
+  view?: DashboardView;
+  folder?: string;
 }): Promise<RecordingListResponse> {
   const params = new URLSearchParams();
   params.set("limit", String(options.limit ?? 50));
@@ -77,18 +95,38 @@ export async function listRecordingsWithOptions(options: {
     params.set("q", options.q.trim());
   }
   params.set("sort", options.sort ?? "newest");
+  params.set("view", options.view ?? "all");
+  if (options.folder?.trim()) {
+    params.set("folder", options.folder.trim());
+  }
   return request<RecordingListResponse>(`/recordings?${params.toString()}`);
+}
+
+export async function listFolders(): Promise<FolderListResponse> {
+  return request<FolderListResponse>("/recordings/folders");
+}
+
+export async function getUsage(): Promise<RecordingUsageResponse> {
+  return request<RecordingUsageResponse>("/recordings/usage");
 }
 
 export async function createRecording(payload: {
   file: File;
   title?: string;
   source?: "upload" | "web_record";
+  noteMd?: string;
+  folderName?: string;
 }): Promise<Recording> {
   const formData = new FormData();
   formData.append("file", payload.file);
   if (payload.title) {
     formData.append("title", payload.title);
+  }
+  if (payload.noteMd) {
+    formData.append("note_md", payload.noteMd);
+  }
+  if (payload.folderName) {
+    formData.append("folder_name", payload.folderName);
   }
   formData.append("source", payload.source ?? "upload");
 
@@ -102,8 +140,25 @@ export async function getRecording(id: string): Promise<Recording> {
   return request<Recording>(`/recordings/${id}`);
 }
 
+export async function getRecordingAudioBlob(id: string): Promise<Blob> {
+  return requestBlob(`/recordings/${id}/audio`);
+}
+
 export async function getTranscript(id: string): Promise<TranscriptResponse> {
   return request<TranscriptResponse>(`/recordings/${id}/transcript`);
+}
+
+export async function updateTranscriptSegments(
+  id: string,
+  segments: TranscriptSegment[],
+): Promise<TranscriptResponse> {
+  return request<TranscriptResponse>(`/recordings/${id}/segments`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ segments }),
+  });
 }
 
 export async function getSummary(id: string): Promise<SummaryResponse> {
@@ -134,8 +189,50 @@ export async function updateRecordingTitle(id: string, title: string): Promise<R
   });
 }
 
+export async function updateRecordingFavorite(id: string, isFavorite: boolean): Promise<Recording> {
+  return request<Recording>(`/recordings/${id}/favorite`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ is_favorite: isFavorite }),
+  });
+}
+
+export async function updateRecordingFolder(id: string, folderName: string | null): Promise<Recording> {
+  return request<Recording>(`/recordings/${id}/folder`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ folder_name: folderName }),
+  });
+}
+
+export async function updateRecordingNote(id: string, noteMd: string): Promise<Recording> {
+  return request<Recording>(`/recordings/${id}/note`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ note_md: noteMd }),
+  });
+}
+
 export async function deleteRecording(id: string): Promise<void> {
   await request<unknown>(`/recordings/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function restoreRecording(id: string): Promise<Recording> {
+  return request<Recording>(`/recordings/${id}/restore`, {
+    method: "POST",
+  });
+}
+
+export async function purgeRecording(id: string): Promise<void> {
+  await request<unknown>(`/recordings/${id}/purge`, {
     method: "DELETE",
   });
 }

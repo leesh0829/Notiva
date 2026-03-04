@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     qa_history_chars_per_turn: int = 280
     summary_map_chunk_chars: int = 1800
     summary_map_max_chunks: int = 12
+    trash_retention_days: int = 7
+
+    token_budget_total: int = 2_000_000
+    monthly_budget_usd: float = 5.0
+    price_chat_input_per_1m: float = 0.4
+    price_chat_output_per_1m: float = 1.6
+    price_embedding_per_1m: float = 0.02
+    price_stt_per_minute: float = 0.006
 
     cors_origins: str = "*"
 

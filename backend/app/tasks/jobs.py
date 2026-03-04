@@ -11,11 +11,15 @@ from app.tasks.celery_app import celery_app
 
 
 def enqueue_pipeline(recording_id: str) -> None:
-    chain(
-        transcribe_task.s(recording_id),
-        summarize_task.s(),
-        embed_index_task.s(),
-    ).apply_async()
+    try:
+        chain(
+            transcribe_task.s(recording_id),
+            summarize_task.s(),
+            embed_index_task.s(),
+        ).apply_async()
+    except Exception:
+        # Do not fail the upload API call in eager mode; task handlers update status.
+        return
 
 
 def _update_status(recording: Recording, status: RecordingStatus, progress: int, message: str | None = None) -> None:

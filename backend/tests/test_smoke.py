@@ -4,7 +4,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 # Test env must be set before app import.
-os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(__file__).parent / 'test.db'}")
+TEST_DB_PATH = Path(__file__).parent / "test.db"
+if TEST_DB_PATH.exists():
+    TEST_DB_PATH.unlink()
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{TEST_DB_PATH}")
 os.environ.setdefault("TASK_ALWAYS_EAGER", "true")
 os.environ.setdefault("LOCAL_STORAGE_DIR", str(Path(__file__).parent / '.tmp_storage'))
 os.environ.setdefault("OPENAI_API_KEY", "")
@@ -92,6 +95,33 @@ def test_recording_smoke_flow() -> None:
 
     deleted = client.delete(f"/recordings/{recording_id}", headers=headers)
     assert deleted.status_code == 204
+
+    listed_after_delete = client.get("/recordings?view=all", headers=headers)
+    assert listed_after_delete.status_code == 200
+    assert all(item["id"] != recording_id for item in listed_after_delete.json()["items"])
+
+    trash = client.get("/recordings?view=trash", headers=headers)
+    assert trash.status_code == 200
+    assert any(item["id"] == recording_id for item in trash.json()["items"])
+
+    restored = client.post(f"/recordings/{recording_id}/restore", headers=headers)
+    assert restored.status_code == 200
+    assert restored.json()["deleted_at"] is None
+
+    favorite = client.patch(
+        f"/recordings/{recording_id}/favorite",
+        headers=headers,
+        json={"is_favorite": True},
+    )
+    assert favorite.status_code == 200
+    assert favorite.json()["is_favorite"] is True
+
+    usage = client.get("/recordings/usage", headers=headers)
+    assert usage.status_code == 200
+    assert "used_tokens" in usage.json()
+
+    purged = client.delete(f"/recordings/{recording_id}/purge", headers=headers)
+    assert purged.status_code == 204
 
     missing = client.get(f"/recordings/{recording_id}", headers=headers)
     assert missing.status_code == 404
