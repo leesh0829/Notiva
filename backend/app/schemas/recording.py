@@ -35,6 +35,10 @@ class RecordingListOut(BaseModel):
     items: list[RecordingOut]
 
 
+class RecordingUpdateRequest(BaseModel):
+    title: str = Field(default="", max_length=300)
+
+
 class TranscriptSegmentOut(BaseModel):
     start_ms: int
     end_ms: int

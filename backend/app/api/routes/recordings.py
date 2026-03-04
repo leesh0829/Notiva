@@ -1,16 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from sqlalchemy import asc, desc, func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user_id
-from app.db.models import QAMessage, Recording, Summary, Transcript
+from app.db.models import QAMessage, Recording, Summary, Transcript, TranscriptChunk
 from app.db.session import get_db
 from app.schemas.qa import QAHistoryResponse, QARequest, QAResponse, QATurnOut
 from app.schemas.recording import (
     RecordingDetailOut,
     RecordingListOut,
     RecordingOut,
+    RecordingUpdateRequest,
     SummaryOut,
     TranscriptOut,
 )
@@ -22,11 +26,7 @@ router = APIRouter()
 
 
 def _get_owned_recording(db: Session, recording_id: str, user_id: str) -> Recording:
-    recording = (
-        db.query(Recording)
-        .filter(Recording.id == recording_id, Recording.user_id == user_id)
-        .first()
-    )
+    recording = db.query(Recording).filter(Recording.id == recording_id, Recording.user_id == user_id).first()
     if not recording:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
     return recording
@@ -36,17 +36,19 @@ def _get_owned_recording(db: Session, recording_id: str, user_id: str) -> Record
 def list_recordings(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=200),
+    sort: Literal["newest", "oldest"] = Query(default="newest"),
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> RecordingListOut:
-    items = (
-        db.query(Recording)
-        .filter(Recording.user_id == user_id)
-        .order_by(Recording.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    query = db.query(Recording).filter(Recording.user_id == user_id)
+    if q:
+        lowered = q.strip().lower()
+        if lowered:
+            query = query.filter(func.lower(func.coalesce(Recording.title, "")).contains(lowered))
+
+    ordering = desc(Recording.created_at) if sort == "newest" else asc(Recording.created_at)
+    items = query.order_by(ordering).offset(offset).limit(limit).all()
     return RecordingListOut(items=items)
 
 
@@ -72,9 +74,7 @@ def create_recording(
     db.add(recording)
     db.commit()
     db.refresh(recording)
-
     enqueue_pipeline(recording.id)
-
     db.refresh(recording)
     return recording
 
@@ -86,6 +86,41 @@ def get_recording(
     db: Session = Depends(get_db),
 ) -> RecordingDetailOut:
     return _get_owned_recording(db, recording_id, user_id)
+
+
+@router.patch("/{recording_id}", response_model=RecordingOut)
+def update_recording(
+    recording_id: str,
+    payload: RecordingUpdateRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> RecordingOut:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    next_title = payload.title.strip()
+    recording.title = next_title or None
+    db.commit()
+    db.refresh(recording)
+    return recording
+
+
+@router.delete(
+    "/{recording_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_recording(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    db.query(QAMessage).filter(QAMessage.recording_id == recording_id).delete()
+    db.query(TranscriptChunk).filter(TranscriptChunk.recording_id == recording_id).delete()
+    db.query(Summary).filter(Summary.recording_id == recording_id).delete()
+    db.query(Transcript).filter(Transcript.recording_id == recording_id).delete()
+    db.delete(recording)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{recording_id}/transcript", response_model=TranscriptOut)
@@ -135,7 +170,6 @@ def ask_question(
     recording = _get_owned_recording(db, recording_id, user_id)
     if recording.status != "ready":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Index not ready")
-
     try:
         return answer_question(db, recording_id, user_id, payload.question)
     except ValueError as exc:

@@ -54,11 +54,30 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const message = await response.text();
     throw new Error(message || `HTTP ${response.status}`);
   }
+  if (response.status === 204) {
+    return undefined as T;
+  }
   return response.json() as Promise<T>;
 }
 
 export async function listRecordings(limit = 50): Promise<RecordingListResponse> {
   return request<RecordingListResponse>(`/recordings?limit=${limit}`);
+}
+
+export async function listRecordingsWithOptions(options: {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  sort?: "newest" | "oldest";
+}): Promise<RecordingListResponse> {
+  const params = new URLSearchParams();
+  params.set("limit", String(options.limit ?? 50));
+  params.set("offset", String(options.offset ?? 0));
+  if (options.q?.trim()) {
+    params.set("q", options.q.trim());
+  }
+  params.set("sort", options.sort ?? "newest");
+  return request<RecordingListResponse>(`/recordings?${params.toString()}`);
 }
 
 export async function createRecording(payload: {
@@ -103,4 +122,20 @@ export async function askQuestion(id: string, question: string): Promise<QARespo
 
 export async function getQaMessages(id: string): Promise<QAHistoryResponse> {
   return request<QAHistoryResponse>(`/recordings/${id}/qa/messages`);
+}
+
+export async function updateRecordingTitle(id: string, title: string): Promise<Recording> {
+  return request<Recording>(`/recordings/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteRecording(id: string): Promise<void> {
+  await request<unknown>(`/recordings/${id}`, {
+    method: "DELETE",
+  });
 }

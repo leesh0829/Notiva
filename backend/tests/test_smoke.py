@@ -77,3 +77,21 @@ def test_recording_smoke_flow() -> None:
     history_items = history.json()["items"]
     assert len(history_items) >= 1
     assert history_items[-1]["question"] == "다음 액션 아이템이 뭐야?"
+
+    updated = client.patch(
+        f"/recordings/{recording_id}",
+        headers=headers,
+        json={"title": "updated title"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["title"] == "updated title"
+
+    listed = client.get("/recordings?limit=50&q=updated&sort=oldest", headers=headers)
+    assert listed.status_code == 200
+    assert any(item["id"] == recording_id for item in listed.json()["items"])
+
+    deleted = client.delete(f"/recordings/{recording_id}", headers=headers)
+    assert deleted.status_code == 204
+
+    missing = client.get(f"/recordings/{recording_id}", headers=headers)
+    assert missing.status_code == 404
