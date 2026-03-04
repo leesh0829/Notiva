@@ -1,4 +1,7 @@
 import type {
+  AuthCredentials,
+  AuthTokenResponse,
+  AuthUser,
   DashboardView,
   FolderListResponse,
   QAHistoryResponse,
@@ -16,18 +19,67 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const DEV_USER_ID =
   process.env.NEXT_PUBLIC_DEV_USER_ID ?? "00000000-0000-0000-0000-000000000001";
 const DEV_TOKEN = process.env.NEXT_PUBLIC_DEV_JWT ?? "";
+const ENABLE_DEV_AUTO_AUTH = process.env.NEXT_PUBLIC_ENABLE_DEV_AUTH === "true";
 const TOKEN_STORAGE_KEY = "meeting_ai_access_token";
+const AUTH_REQUIRED_CODE = "AUTH_REQUIRED";
 
-function getStoredToken(): string {
+type AuthError = Error & { code?: string };
+
+export function getStoredToken(): string {
   if (typeof window === "undefined") {
     return DEV_TOKEN;
   }
   return window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? DEV_TOKEN;
 }
 
+export function setStoredToken(token: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+}
+
+export function clearStoredToken(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+export function hasStoredToken(): boolean {
+  return Boolean(getStoredToken());
+}
+
+function authRequiredError(message = "Login required"): AuthError {
+  const err = new Error(message) as AuthError;
+  err.code = AUTH_REQUIRED_CODE;
+  return err;
+}
+
+export function isAuthRequiredError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === AUTH_REQUIRED_CODE
+  );
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const text = (await response.text()).trim();
+  if (!text) return `HTTP ${response.status}`;
+  try {
+    const parsed = JSON.parse(text) as { detail?: string };
+    if (parsed.detail?.trim()) return parsed.detail;
+  } catch {
+    // Keep raw text when body is not JSON.
+  }
+  return text;
+}
+
 async function ensureToken(): Promise<string> {
   const existing = getStoredToken();
   if (existing) return existing;
+
+  if (!ENABLE_DEV_AUTO_AUTH) {
+    throw authRequiredError();
+  }
 
   const response = await fetch(`${API_BASE}/auth/dev-token`, {
     method: "POST",
@@ -35,12 +87,10 @@ async function ensureToken(): Promise<string> {
     body: JSON.stringify({ user_id: DEV_USER_ID }),
   });
   if (!response.ok) {
-    throw new Error("Auth token not found. Set NEXT_PUBLIC_DEV_JWT or enable /auth/dev-token.");
+    throw authRequiredError("Failed to bootstrap dev token");
   }
   const payload = (await response.json()) as { access_token: string };
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, payload.access_token);
-  }
+  setStoredToken(payload.access_token);
   return payload.access_token;
 }
 
@@ -58,8 +108,11 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await authedFetch(path, init);
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `HTTP ${response.status}`);
+    if (response.status === 401) {
+      clearStoredToken();
+      throw authRequiredError(await readErrorMessage(response));
+    }
+    throw new Error(await readErrorMessage(response));
   }
   if (response.status === 204) {
     return undefined as T;
@@ -70,10 +123,51 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 async function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
   const response = await authedFetch(path, init);
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `HTTP ${response.status}`);
+    if (response.status === 401) {
+      clearStoredToken();
+      throw authRequiredError(await readErrorMessage(response));
+    }
+    throw new Error(await readErrorMessage(response));
   }
   return response.blob();
+}
+
+export async function register(payload: AuthCredentials): Promise<AuthTokenResponse> {
+  const response = await fetch(`${API_BASE}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+  const data = (await response.json()) as AuthTokenResponse;
+  setStoredToken(data.access_token);
+  return data;
+}
+
+export async function login(payload: AuthCredentials): Promise<AuthTokenResponse> {
+  const response = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+  const data = (await response.json()) as AuthTokenResponse;
+  setStoredToken(data.access_token);
+  return data;
+}
+
+export function logout(): void {
+  clearStoredToken();
+}
+
+export async function getMe(): Promise<AuthUser> {
+  return request<AuthUser>("/auth/me");
 }
 
 export async function listRecordings(limit = 50): Promise<RecordingListResponse> {

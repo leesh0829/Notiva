@@ -39,6 +39,31 @@ def test_issue_dev_token() -> None:
     assert payload["access_token"]
 
 
+def test_register_login_and_me() -> None:
+    register = client.post(
+        "/auth/register",
+        json={"email": "user@example.com", "password": "test-password-123"},
+    )
+    assert register.status_code == 201
+    register_payload = register.json()
+    assert register_payload["user"]["email"] == "user@example.com"
+    assert register_payload["access_token"]
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "user@example.com", "password": "test-password-123"},
+    )
+    assert login.status_code == 200
+    login_payload = login.json()
+    token = login_payload["access_token"]
+    assert token
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    me_payload = me.json()
+    assert me_payload["email"] == "user@example.com"
+
+
 def test_recording_smoke_flow() -> None:
     token = create_access_token("00000000-0000-0000-0000-000000000001")
     headers = {"Authorization": f"Bearer {token}"}

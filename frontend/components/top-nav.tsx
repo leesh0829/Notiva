@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
 
-import { listFolders } from "@/lib/api";
+import { hasStoredToken, listFolders, logout } from "@/lib/api";
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -14,18 +14,38 @@ function cx(...values: Array<string | false | null | undefined>) {
 export function TopNav() {
   const pathname = usePathname();
   const [query, setQuery] = useState<URLSearchParams>(new URLSearchParams());
-  const { data } = useSWR("folders", () => listFolders(), { refreshInterval: 10000 });
+  const [authed, setAuthed] = useState(false);
+  const { data } = useSWR(authed ? "folders" : null, () => listFolders(), { refreshInterval: 10000 });
   const currentView = query.get("view") ?? "all";
   const currentFolder = query.get("folder") ?? "";
 
   useEffect(() => {
     const sync = () => setQuery(new URLSearchParams(window.location.search));
+    const syncAuth = () => setAuthed(hasStoredToken());
     sync();
+    syncAuth();
     window.addEventListener("popstate", sync);
-    return () => window.removeEventListener("popstate", sync);
+    window.addEventListener("storage", syncAuth);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("storage", syncAuth);
+    };
   }, []);
 
   const folderLinks = useMemo(() => data?.items ?? [], [data?.items]);
+
+  if (!authed) {
+    return (
+      <div className="flex w-full items-center justify-end text-sm text-slate-700">
+        <Link
+          href="/login"
+          className={cx("transition hover:text-slate-900", pathname.startsWith("/login") && "font-semibold text-slate-900")}
+        >
+          로그인
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="flex w-full flex-wrap items-center justify-end gap-x-4 gap-y-2 text-sm text-slate-700">
@@ -62,6 +82,16 @@ export function TopNav() {
       >
         새 녹음
       </Link>
+      <button
+        type="button"
+        className="transition hover:text-slate-900"
+        onClick={() => {
+          logout();
+          window.location.href = "/login";
+        }}
+      >
+        로그아웃
+      </button>
       {folderLinks.length > 0 ? (
         <div className="flex items-center gap-2">
           <span className="text-slate-500">폴더</span>

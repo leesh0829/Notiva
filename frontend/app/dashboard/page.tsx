@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import {
   deleteRecording,
   getUsage,
+  hasStoredToken,
+  isAuthRequiredError,
   listFolders,
   listRecordingsWithOptions,
   purgeRecording,
@@ -39,6 +41,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const pathname = usePathname();
   const [queryParams, setQueryParamsState] = useState<URLSearchParams>(new URLSearchParams());
+  const [authReady, setAuthReady] = useState(false);
 
   const view = (queryParams.get("view") as DashboardView | null) ?? "all";
   const folder = queryParams.get("folder") ?? "";
@@ -56,7 +59,7 @@ export default function DashboardPage() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const { data, isLoading, error, mutate } = useSWR(
-    ["recordings", view, folder, q, sort],
+    authReady ? ["recordings", view, folder, q, sort] : null,
     () =>
       listRecordingsWithOptions({
         limit: 200,
@@ -67,16 +70,30 @@ export default function DashboardPage() {
       }),
     { refreshInterval: 5000 },
   );
-  const { data: foldersData, mutate: mutateFolders } = useSWR("folders", () => listFolders(), {
+  const { data: foldersData, mutate: mutateFolders } = useSWR(authReady ? "folders" : null, () => listFolders(), {
     refreshInterval: 15000,
   });
-  const { data: usageData, mutate: mutateUsage } = useSWR("usage", () => getUsage(), {
+  const { data: usageData, mutate: mutateUsage } = useSWR(authReady ? "usage" : null, () => getUsage(), {
     refreshInterval: 15000,
   });
 
   useEffect(() => {
     setSearchDraft(q);
   }, [q]);
+
+  useEffect(() => {
+    if (!hasStoredToken()) {
+      router.replace("/login");
+      return;
+    }
+    setAuthReady(true);
+  }, [router]);
+
+  useEffect(() => {
+    if (isAuthRequiredError(error)) {
+      router.replace("/login");
+    }
+  }, [error, router]);
 
   useEffect(() => {
     const sync = () => setQueryParamsState(new URLSearchParams(window.location.search));
@@ -216,6 +233,10 @@ export default function DashboardPage() {
         : folder
           ? `폴더: ${folder}`
           : "전체 보드";
+
+  if (!authReady) {
+    return <p className="text-sm text-slate-600">인증 확인 중...</p>;
+  }
 
   return (
     <section className="space-y-6">

@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import decode_access_token
 from app.db.models import User
 from app.db.session import get_db
@@ -26,8 +27,14 @@ def get_current_user_id(
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        user = User(id=user_id, email=f"{user_id}@local.invalid", password_hash="")
-        db.add(user)
-        db.commit()
+        if settings.app_env.lower() not in {"prod", "production"} and settings.enable_dev_auth_routes:
+            user = User(id=user_id, email=f"{user_id}@local.invalid", password_hash="")
+            db.add(user)
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+            )
     return user_id
 

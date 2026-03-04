@@ -10,6 +10,23 @@ export type RecordingStatus =
 export type DashboardView = "all" | "favorite" | "trash";
 export type SortOrder = "newest" | "oldest";
 
+export interface AuthCredentials {
+  email: string;
+  password: string;
+}
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  created_at: string;
+}
+
+export interface AuthTokenResponse {
+  access_token: string;
+  token_type: "bearer";
+  user: AuthUser;
+}
+
 export interface Recording {
   id: string;
   title?: string | null;
