@@ -20,7 +20,7 @@
 - 백엔드 필수 API 5개 구현
 - 인메모리 저장소 기반 파이프라인 동작
 - STT/요약/RAG는 placeholder 구현
-- 프론트 라우트 뼈대(`/dashboard`, `/recordings/new`, `/recordings/[id]`)
+- 프론트 라우트 뼈대 + Next.js 실행 최소 설정 포함
 
 ---
 
@@ -74,22 +74,24 @@ MVP 실서비스 전, 아래 항목은 **필수로 교체**해야 합니다.
 .
 ├─ backend/
 │  ├─ app/
-│  │  ├─ api/routes/recordings.py     # 핵심 API
-│  │  ├─ services/                    # STT/요약/RAG placeholder
-│  │  ├─ worker/tasks.py              # transcribe/summarize/embed 파이프라인
-│  │  ├─ worker/celery_app.py         # Celery 스켈레톤
-│  │  ├─ deps.py                      # 임시 인증 의존성
-│  │  ├─ models.py                    # 인메모리 모델
-│  │  ├─ schemas.py                   # 요청/응답 스키마
-│  │  └─ main.py                      # FastAPI 엔트리
-│  ├─ tests/test_smoke.py             # API 스모크 테스트
+│  │  ├─ api/routes/recordings.py
+│  │  ├─ services/
+│  │  ├─ worker/tasks.py
+│  │  ├─ worker/celery_app.py
+│  │  ├─ deps.py
+│  │  ├─ models.py
+│  │  ├─ schemas.py
+│  │  └─ main.py
+│  ├─ tests/test_smoke.py
 │  └─ requirements.txt
 ├─ frontend/
-│  ├─ app/dashboard/page.tsx
-│  ├─ app/recordings/new/page.tsx
-│  ├─ app/recordings/[id]/page.tsx
-│  ├─ components/progress-pill.tsx
-│  └─ lib/api.ts
+│  ├─ app/
+│  ├─ components/
+│  ├─ lib/
+│  ├─ package.json
+│  ├─ next.config.js
+│  ├─ tsconfig.json
+│  └─ next-env.d.ts
 └─ docs/
    ├─ mvp-blueprint.md
    ├─ implementation-guide.md
@@ -100,13 +102,13 @@ MVP 실서비스 전, 아래 항목은 **필수로 교체**해야 합니다.
 
 ## 4) 프로젝트 사용법
 
-## 4-1. API 사용 흐름
+### 4-1. API 사용 흐름
 1. `POST /recordings`로 파일 업로드
 2. `GET /recordings/{id}`로 상태 확인
 3. 완료 후 transcript/summary 조회
 4. `POST /recordings/{id}/qa`로 질의 + citation 응답
 
-### 예시(cURL)
+### 4-2. API 예시(cURL)
 ```bash
 curl -X POST http://localhost:8000/recordings \
   -H "x-user-id: user-1" \
@@ -129,36 +131,70 @@ curl -X POST http://localhost:8000/recordings/{id}/qa \
 
 ### 사전 요구사항
 - Python 3.10+
-- Node.js 20+ (프론트 확장 시)
+- Node.js 20+
 
-### 백엔드 실행
-```bash
+## 5-1) Windows PowerShell 기준 (중요)
+
+> 아래는 질문에서 주신 PowerShell 오류를 바로 해결하는 명령입니다.
+
+```powershell
+# 1) 프로젝트 루트로 이동
+cd "C:\Users\adelie\Desktop\Hygino\1_PROJECT\22_Untitled\1_PROJECT_FILE\Untitled"
+
+# 2) 백엔드
+cd .\backend
 python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-PYTHONPATH=backend uvicorn app.main:app --reload --port 8000
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:PYTHONPATH = (Get-Location).Path
+uvicorn app.main:app --reload --port 8000
 ```
 
-### 테스트 실행
-```bash
-PYTHONPATH=backend pytest -q backend/tests
+별도 터미널에서 테스트:
+```powershell
+cd "C:\Users\adelie\Desktop\Hygino\1_PROJECT\22_Untitled\1_PROJECT_FILE\Untitled\backend"
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = (Get-Location).Path
+pytest -q .\tests
 ```
 
-### 프론트 개발 서버(Next.js 추가 구성 후)
-```bash
-cd frontend
+프론트 실행:
+```powershell
+cd "C:\Users\adelie\Desktop\Hygino\1_PROJECT\22_Untitled\1_PROJECT_FILE\Untitled\frontend"
 npm install
 npm run dev
 ```
 
-> 참고: 현재 `frontend/`는 최소 라우트 뼈대만 포함합니다. 실제 실행용 `package.json`, `next.config` 등은 다음 단계에서 초기화가 필요합니다.
+### 5-2) macOS/Linux 기준
+
+```bash
+cd /path/to/Untitled/backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+PYTHONPATH=$(pwd) uvicorn app.main:app --reload --port 8000
+```
+
+테스트:
+```bash
+cd /path/to/Untitled/backend
+source .venv/bin/activate
+PYTHONPATH=$(pwd) pytest -q tests
+```
+
+프론트:
+```bash
+cd /path/to/Untitled/frontend
+npm install
+npm run dev
+```
 
 ---
 
-## 6) 프로젝트 빌드
+## 6) 빌드
 
-### 백엔드(컨테이너 권장)
-- Dockerfile 작성 후 `uvicorn app.main:app` 실행
+### 백엔드
+- Dockerfile에서 `uvicorn app.main:app` 실행
 - 환경변수로 DB/S3/REDIS/AI 키 주입
 
 예시 환경변수:
@@ -168,19 +204,19 @@ npm run dev
 - `OPENAI_API_KEY` 또는 STT/LLM provider key
 
 ### 프론트
-- Next.js 프로젝트 초기화 후
 ```bash
+cd frontend
 npm run build
 npm run start
 ```
 
 ---
 
-## 7) 프로젝트 배포
+## 7) 배포
 
 ### 권장 배포 구성
 - Frontend: Vercel
-- Backend API/Worker: Render/Fly.io/Railway 등 컨테이너 플랫폼
+- Backend API/Worker: Render/Fly.io/Railway
 - DB: Managed Postgres(+pgvector)
 - Queue: Managed Redis
 - Storage: S3 compatible object storage
