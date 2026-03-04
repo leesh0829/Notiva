@@ -1,8 +1,24 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 30 50% 98%;
+  --foreground: 223 47% 11%;
+  --card: 0 0% 100%;
+  --muted: 35 35% 92%;
+  --border: 32 25% 82%;
+  --primary: 206 90% 37%;
+  --primary-foreground: 0 0% 100%;
+}
+
 * {
-  box-sizing: border-box;
+  @apply border-border;
 }
 
 body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  @apply bg-background text-foreground antialiased;
+  background-image: radial-gradient(circle at 20% 20%, rgba(14, 165, 233, 0.12), transparent 45%),
+    radial-gradient(circle at 85% 15%, rgba(251, 146, 60, 0.16), transparent 35%);
+  min-height: 100vh;
 }

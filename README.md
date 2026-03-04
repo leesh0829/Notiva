@@ -18,8 +18,8 @@
 
 ### 현재 구현 범위
 - 백엔드 필수 API 5개 구현
-- 인메모리 저장소 기반 파이프라인 동작
-- STT/요약/RAG는 placeholder 구현
+- SQLAlchemy + Celery 체인 기반 파이프라인 동작
+- OpenAI 연동(STT/요약/임베딩/RAG), 키 미설정 시 fallback 동작
 - 프론트 라우트 뼈대 + Next.js 실행 최소 설정 포함
 
 ---
@@ -29,37 +29,37 @@
 MVP 실서비스 전, 아래 항목은 **필수로 교체**해야 합니다.
 
 ### A. 저장소/데이터 계층
-1. `backend/app/models.py`
-   - 인메모리 DB(`InMemoryDB`)를 **Postgres ORM/Repository**로 교체
+1. `backend/app/db/models.py`
+   - 현재 SQLAlchemy 모델을 Alembic migration과 함께 운영 환경(Postgres)으로 고정
 2. `docs/mvp-blueprint.md`의 스키마 기준으로 migration 도입
    - 권장: Alembic(SQLAlchemy) 또는 Prisma
 
 ### B. 파일 업로드/저장
 1. `backend/app/api/routes/recordings.py`
-   - 현재 `audio_url`이 placeholder(`s3://placeholder-bucket/...`)
-   - 실제 S3 SDK(boto3 등)로 업로드 후 URL/Key 저장
+   - S3 업로드는 구현됨(개발 환경은 로컬 fallback 저장소 지원)
 2. 대용량 업로드를 위해 presigned URL 방식 검토
 
 ### C. AI Provider 연동
 1. `backend/app/services/stt.py`
-   - Whisper/Deepgram/Azure STT 등 실서비스 연동
-2. `backend/app/services/summarizer.py`
-   - LLM 호출 및 JSON schema 강제 출력 적용
+   - OpenAI STT 모델 호출 구현. 모델 교체 시 서비스 레이어만 변경
+2. `backend/app/services/summarize.py`
+   - OpenAI LLM JSON 응답 파싱 구현
 3. `backend/app/services/rag.py`
-   - pgvector 기반 유사도 검색 + citation 정밀화
+   - 임베딩 검색 + citation 포함 답변 생성 구현
 
 ### D. 비동기 처리
 1. `backend/app/api/routes/recordings.py`
-   - 현재 `run_pipeline(recording_id)`를 동기 실행
-   - Celery enqueue (`delay/apply_async`)로 변경
-2. `backend/app/worker/celery_app.py`
-   - broker/backend URL을 env 기반으로 변경
+   - `transcribe -> summarize -> embed_index` Celery chain enqueue 구현
+2. `backend/app/tasks/celery_app.py`
+   - broker/backend URL env 기반
 
 ### E. 인증/보안
-1. `backend/app/deps.py`
-   - `x-user-id` 헤더 임시 인증을 실제 인증(Auth.js/Clerk/JWT)으로 교체
-2. 모든 엔드포인트 ownership 검증 유지
-3. transcript 원문/개인정보 로그 마스킹
+1. `backend/app/api/deps.py`
+   - Bearer JWT 검증 기반 인증으로 교체
+2. `backend/app/api/routes/auth.py`
+   - 개발 환경용 `/auth/dev-token` 발급 엔드포인트 제공
+3. 모든 엔드포인트 ownership 검증 유지
+4. transcript 원문/개인정보 로그 마스킹
 
 ### F. 프론트 통신/상태
 1. `frontend/lib/api.ts`
@@ -75,12 +75,12 @@ MVP 실서비스 전, 아래 항목은 **필수로 교체**해야 합니다.
 ├─ backend/
 │  ├─ app/
 │  │  ├─ api/routes/recordings.py
+│  │  ├─ api/routes/auth.py
 │  │  ├─ services/
-│  │  ├─ worker/tasks.py
-│  │  ├─ worker/celery_app.py
-│  │  ├─ deps.py
-│  │  ├─ models.py
-│  │  ├─ schemas.py
+│  │  ├─ tasks/jobs.py
+│  │  ├─ tasks/celery_app.py
+│  │  ├─ db/models.py
+│  │  ├─ schemas/
 │  │  └─ main.py
 │  ├─ tests/test_smoke.py
 │  └─ requirements.txt
@@ -110,18 +110,22 @@ MVP 실서비스 전, 아래 항목은 **필수로 교체**해야 합니다.
 
 ### 4-2. API 예시(cURL)
 ```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/dev-token \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"00000000-0000-0000-0000-000000000001"}' | jq -r .access_token)
+
 curl -X POST http://localhost:8000/recordings \
-  -H "x-user-id: user-1" \
+  -H "Authorization: Bearer $TOKEN" \
   -F "title=운영체제 수업" \
   -F "file=@lecture.wav"
 
-curl -H "x-user-id: user-1" http://localhost:8000/recordings/{id}
-curl -H "x-user-id: user-1" http://localhost:8000/recordings/{id}/transcript
-curl -H "x-user-id: user-1" http://localhost:8000/recordings/{id}/summary
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/recordings/{id}
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/recordings/{id}/transcript
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/recordings/{id}/summary
 
 curl -X POST http://localhost:8000/recordings/{id}/qa \
   -H "Content-Type: application/json" \
-  -H "x-user-id: user-1" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"question":"다음 액션 아이템이 뭐야?"}'
 ```
 
