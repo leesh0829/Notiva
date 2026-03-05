@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import quote
@@ -37,6 +38,7 @@ from app.services.storage import delete_object, read_object_bytes, upload_to_s3
 from app.tasks.jobs import enqueue_pipeline
 
 router = APIRouter()
+_UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
 
 
 def _estimate_tokens(text: str) -> int:
@@ -91,7 +93,7 @@ def _purge_expired_trash(db: Session, user_id: str) -> None:
 def _coerce_segment(segment: dict, idx: int) -> dict:
     start_ms = int(segment.get("start_ms", 0) or 0)
     end_ms = int(segment.get("end_ms", start_ms) or start_ms)
-    text = str(segment.get("text", "")).strip()
+    text = _collapse_repeated_units(str(segment.get("text", "")).strip())
     speaker = segment.get("speaker")
     if speaker is not None:
         speaker = str(speaker).strip() or None
@@ -100,12 +102,36 @@ def _coerce_segment(segment: dict, idx: int) -> dict:
     return {"start_ms": start_ms, "end_ms": end_ms, "text": text, "speaker": speaker}
 
 
+def _collapse_repeated_units(text: str) -> str:
+    normalized = " ".join((text or "").split()).strip()
+    if not normalized:
+        return ""
+    units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(normalized) if unit.strip()]
+    if len(units) < 2:
+        return normalized
+    compact: list[str] = []
+    last_key = ""
+    for unit in units:
+        key = unit.lower()
+        if key == last_key:
+            continue
+        compact.append(unit)
+        last_key = key
+    return " ".join(compact) if compact else normalized
+
+
 def _normalized_segments(segments: list[dict]) -> list[dict]:
     normalized: list[dict] = []
-    for idx, segment in enumerate(segments):
-        coerced = _coerce_segment(segment, idx)
-        if coerced["text"]:
-            normalized.append(coerced)
+    last_key = ""
+    for segment in segments:
+        coerced = _coerce_segment(segment, len(normalized))
+        key = coerced["text"].strip().lower()
+        if not key:
+            continue
+        if key == last_key:
+            continue
+        normalized.append(coerced)
+        last_key = key
     return normalized
 
 
@@ -435,6 +461,7 @@ def get_transcript(
     normalized = _normalized_segments(transcript.segments or [])
     if normalized != (transcript.segments or []):
         transcript.segments = normalized
+        transcript.full_text = " ".join(segment["text"] for segment in normalized)
         db.commit()
     return TranscriptOut(
         recording_id=recording_id,

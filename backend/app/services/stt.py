@@ -14,6 +14,7 @@ from app.services.storage import read_object_bytes
 MAX_STT_FILE_BYTES = 24 * 1024 * 1024
 CHUNK_SECONDS = 15 * 60
 _DURATION_PATTERN = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
 
 
 def _placeholder_transcription() -> tuple[str, list[dict], str]:
@@ -101,14 +102,45 @@ def _extract_text_language_segments(result) -> tuple[str, str, list[dict]]:
             end_sec = float(getattr(segment, "end", start_sec) or start_sec)
         if not segment_text:
             continue
+        cleaned_text = _collapse_repeated_units(segment_text)
+        if not cleaned_text:
+            continue
         normalized_segments.append(
             {
                 "start_ms": max(0, int(start_sec * 1000)),
                 "end_ms": max(0, int(end_sec * 1000)),
-                "text": segment_text,
+                "text": cleaned_text,
             }
         )
-    return text, language, normalized_segments
+    deduped_segments: list[dict] = []
+    last_key = ""
+    for segment in normalized_segments:
+        key = segment["text"].strip().lower()
+        if not key:
+            continue
+        if key == last_key:
+            continue
+        deduped_segments.append(segment)
+        last_key = key
+    return _collapse_repeated_units(text), language, deduped_segments
+
+
+def _collapse_repeated_units(text: str) -> str:
+    normalized = " ".join((text or "").split()).strip()
+    if not normalized:
+        return ""
+    units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(normalized) if unit.strip()]
+    if len(units) < 2:
+        return normalized
+    compact: list[str] = []
+    last_key = ""
+    for unit in units:
+        key = unit.lower()
+        if key == last_key:
+            continue
+        compact.append(unit)
+        last_key = key
+    return " ".join(compact) if compact else normalized
 
 
 def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, list[dict], str]:
