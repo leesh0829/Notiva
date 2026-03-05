@@ -64,6 +64,7 @@ pnpm-debug.log*
 *.rdb
 .tmp_storage/
 backend/tests/.tmp_storage/
+backend/.local_s3/
 
 # Test artifacts
 coverage/

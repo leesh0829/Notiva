@@ -2,7 +2,7 @@
 
 from celery import chain
 
-from app.db.models import Recording, RecordingStatus, Transcript
+from app.db.models import Recording, RecordingStatus, Summary, Transcript, TranscriptChunk
 from app.db.session import SessionLocal
 from app.services.embedding import build_chunk_index
 from app.services.stt import run_transcription
@@ -28,10 +28,22 @@ def _update_status(recording: Recording, status: RecordingStatus, progress: int,
     recording.error_message = message
 
 
+def _is_already_completed(db, recording_id: str) -> bool:
+    recording = db.query(Recording).filter(Recording.id == recording_id).first()
+    if not recording or recording.status != RecordingStatus.READY.value:
+        return False
+    transcript_exists = db.query(Transcript.id).filter(Transcript.recording_id == recording_id).first() is not None
+    summary_exists = db.query(Summary.id).filter(Summary.recording_id == recording_id).first() is not None
+    chunk_exists = db.query(TranscriptChunk.id).filter(TranscriptChunk.recording_id == recording_id).first() is not None
+    return transcript_exists and summary_exists and chunk_exists
+
+
 @celery_app.task(name="app.tasks.jobs.transcribe_task")
 def transcribe_task(recording_id: str) -> str:
     db = SessionLocal()
     try:
+        if _is_already_completed(db, recording_id):
+            return recording_id
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if not recording:
             raise ValueError("Recording not found")
@@ -73,6 +85,8 @@ def transcribe_task(recording_id: str) -> str:
 def summarize_task(recording_id: str) -> str:
     db = SessionLocal()
     try:
+        if _is_already_completed(db, recording_id):
+            return recording_id
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if not recording:
             raise ValueError("Recording not found")
@@ -100,6 +114,8 @@ def summarize_task(recording_id: str) -> str:
 def embed_index_task(recording_id: str) -> str:
     db = SessionLocal()
     try:
+        if _is_already_completed(db, recording_id):
+            return recording_id
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if not recording:
             raise ValueError("Recording not found")

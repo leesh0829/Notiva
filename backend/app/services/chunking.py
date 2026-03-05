@@ -1,6 +1,31 @@
 from __future__ import annotations
 
 
+def _split_text_by_chars(text: str, max_chars: int) -> list[str]:
+    clean = text.strip()
+    if not clean:
+        return []
+    if len(clean) <= max_chars:
+        return [clean]
+
+    parts: list[str] = []
+    cursor = 0
+    total = len(clean)
+    while cursor < total:
+        end = min(total, cursor + max_chars)
+        if end < total:
+            split_at = clean.rfind(" ", cursor + max(1, max_chars // 2), end)
+            if split_at > cursor:
+                end = split_at
+        piece = clean[cursor:end].strip()
+        if piece:
+            parts.append(piece)
+        if end <= cursor:
+            end = min(total, cursor + max_chars)
+        cursor = end
+    return parts
+
+
 def chunk_transcript_segments(
     segments: list[dict],
     max_chars: int,
@@ -13,7 +38,21 @@ def chunk_transcript_segments(
             continue
         start_ms = int(segment.get("start_ms", 0) or 0)
         end_ms = int(segment.get("end_ms", start_ms) or start_ms)
-        cleaned.append({"start_ms": start_ms, "end_ms": end_ms, "text": text})
+        split_texts = _split_text_by_chars(text, max_chars=max_chars)
+        if len(split_texts) <= 1:
+            cleaned.append({"start_ms": start_ms, "end_ms": end_ms, "text": text})
+            continue
+
+        span = max(0, end_ms - start_ms)
+        count = len(split_texts)
+        for idx, item_text in enumerate(split_texts):
+            if span > 0:
+                item_start = start_ms + int(span * (idx / count))
+                item_end = start_ms + int(span * ((idx + 1) / count))
+            else:
+                item_start = start_ms
+                item_end = end_ms
+            cleaned.append({"start_ms": item_start, "end_ms": item_end, "text": item_text})
 
     if not cleaned:
         return []

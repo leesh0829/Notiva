@@ -22,3 +22,18 @@ body {
     radial-gradient(circle at 85% 15%, rgba(251, 146, 60, 0.16), transparent 35%);
   min-height: 100vh;
 }
+
+@keyframes analysis-popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.analysis-popup {
+  animation: analysis-popup-in 0.22s ease-out;
+}

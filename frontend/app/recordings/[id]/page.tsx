@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, MoreHorizontal } from "lucide-react";
+import { Download, MoreHorizontal, RotateCcw } from "lucide-react";
 
+import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { ProgressPill } from "@/components/progress-pill";
 import { Button } from "@/components/ui/button";
@@ -16,10 +17,11 @@ import {
   isAuthRequiredError,
   getSummary,
   getTranscript,
+  retryRecordingAnalysis,
   updateRecordingNote,
   updateTranscriptSegments,
 } from "@/lib/api";
-import type { QATurn, Recording, SummaryResponse, TranscriptResponse } from "@/lib/types";
+import type { QATurn, Recording, RecordingStatus, SummaryResponse, TranscriptResponse } from "@/lib/types";
 
 const TABS = ["summary", "transcript", "qa", "memo"] as const;
 const TAB_LABELS: Record<(typeof TABS)[number], string> = {
@@ -30,6 +32,7 @@ const TAB_LABELS: Record<(typeof TABS)[number], string> = {
 };
 type Tab = (typeof TABS)[number];
 type MemoView = "write" | "view";
+const PROCESSING_STATUSES: RecordingStatus[] = ["uploaded", "transcribing", "transcribed", "summarizing", "indexing"];
 
 interface Props {
   params: { id: string };
@@ -179,23 +182,31 @@ export default function RecordingDetailPage({ params }: Props) {
   const [loadingQa, setLoadingQa] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [savingSpeaker, setSavingSpeaker] = useState(false);
-  const [memoTab, setMemoTab] = useState<MemoView>("write");
+  const [memoTab, setMemoTab] = useState<MemoView>("view");
   const [noteMd, setNoteMd] = useState("");
   const [showSpeaker, setShowSpeaker] = useState(false);
   const [showTimestamp, setShowTimestamp] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioLoadingRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
     if (!hasStoredToken()) {
       router.replace("/login");
       return;
     }
     setAuthReady(true);
-  }, [router]);
+  }, [hydrated, router]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -211,15 +222,20 @@ export default function RecordingDetailPage({ params }: Props) {
         setRecording(meta);
         setNoteMd(meta.note_md ?? "");
 
-        if (!localAudioUrl) {
-          try {
-            const audioBlob = await getRecordingAudioBlob(params.id);
-            if (cancelled) return;
-            localAudioUrl = URL.createObjectURL(audioBlob);
-            setAudioUrl(localAudioUrl);
-          } catch {
-            // Ignore audio load failure in detail page.
-          }
+        if (!localAudioUrl && !audioLoadingRef.current) {
+          audioLoadingRef.current = true;
+          void getRecordingAudioBlob(params.id)
+            .then((audioBlob) => {
+              if (cancelled) return;
+              localAudioUrl = URL.createObjectURL(audioBlob);
+              setAudioUrl(localAudioUrl);
+            })
+            .catch(() => {
+              // Ignore audio load failure in detail page.
+            })
+            .finally(() => {
+              audioLoadingRef.current = false;
+            });
         }
 
         if (meta.status === "ready") {
@@ -258,6 +274,13 @@ export default function RecordingDetailPage({ params }: Props) {
   }, [authReady, params.id, router]);
 
   const canAsk = useMemo(() => recording?.status === "ready", [recording?.status]);
+  const showAnalysisPopup = useMemo(() => {
+    if (!recording) return retrying;
+    return retrying || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, retrying]);
+  const popupStatus: RecordingStatus =
+    retrying && recording?.status === "failed" ? "uploaded" : (recording?.status ?? "uploaded");
+  const popupProgress = retrying && recording?.status === "failed" ? 5 : (recording?.progress ?? 5);
 
   useEffect(() => {
     if (tab === "qa") {
@@ -329,6 +352,33 @@ export default function RecordingDetailPage({ params }: Props) {
     }
   }
 
+  async function onRetryAnalysis() {
+    if (!recording || retrying) return;
+    try {
+      setRetrying(true);
+      setError(null);
+      const updated = await retryRecordingAnalysis(params.id);
+      setRecording(updated);
+      setSummary(null);
+      setTranscript(null);
+      setQaTurns([]);
+      setTab("summary");
+      setMenuOpen(false);
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
+      setError(err instanceof Error ? err.message : "재분석 요청에 실패했습니다.");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  if (!hydrated) {
+    return null;
+  }
+
   if (!authReady) {
     return <p className="text-sm text-slate-600">인증 확인 중...</p>;
   }
@@ -341,6 +391,12 @@ export default function RecordingDetailPage({ params }: Props) {
 
   return (
     <section className="mx-auto max-w-[66rem] space-y-5">
+      <AnalysisProgressPopup
+        visible={showAnalysisPopup}
+        status={popupStatus}
+        progress={popupProgress}
+        title={recording?.title ?? undefined}
+      />
       <div>
         <Button asChild variant="outline" size="sm">
           <a href="/dashboard">대시보드로 돌아가기</a>
@@ -368,6 +424,17 @@ export default function RecordingDetailPage({ params }: Props) {
             </button>
             {menuOpen ? (
               <div className="absolute right-0 top-11 z-10 w-44 rounded-md border border-slate-200 bg-white p-1 shadow">
+                {recording?.status === "failed" ? (
+                  <button
+                    type="button"
+                    disabled={retrying}
+                    className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void onRetryAnalysis()}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {retrying ? "재시도 요청 중..." : "AI 재분석 시도"}
+                  </button>
+                ) : null}
                 {(["txt", "doc", "hwp", "pdf"] as const).map((ext) => (
                   <button
                     key={ext}
@@ -472,7 +539,9 @@ export default function RecordingDetailPage({ params }: Props) {
               </div>
             </>
           ) : (
-            <p className="text-sm text-slate-600">요약 생성 중...</p>
+            <p className="text-sm text-slate-600">
+              {recording?.status === "ready" ? "요약 불러오는 중..." : "요약 생성 중..."}
+            </p>
           )}
         </section>
       ) : null}
@@ -526,7 +595,9 @@ export default function RecordingDetailPage({ params }: Props) {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-slate-600">전사 생성 중...</p>
+            <p className="text-sm text-slate-600">
+              {recording?.status === "ready" ? "전사 불러오는 중..." : "전사 생성 중..."}
+            </p>
           )}
         </section>
       ) : null}

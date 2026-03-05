@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
 import { UploadRecorder } from "@/components/upload-recorder";
 import { Button } from "@/components/ui/button";
 import { MarkdownPreview } from "@/components/markdown-preview";
@@ -62,7 +63,13 @@ export default function NewRecordingPage() {
   }
 
   return (
-    <section className="space-y-6">
+    <section className="mx-auto max-w-[66rem] space-y-6">
+      <AnalysisProgressPopup
+        visible={loading}
+        status="uploaded"
+        progress={5}
+        title={title.trim() || undefined}
+      />
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div>
           <h1 className="text-2xl font-semibold">새 녹음 업로드</h1>

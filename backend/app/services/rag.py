@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 
+from openai import BadRequestError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -10,6 +11,21 @@ from app.db.models import QAMessage, TranscriptChunk
 from app.schemas.qa import QAResponse
 from app.services.embedding import embed_text
 from app.services.openai_client import get_openai_client
+
+
+def _is_context_limit_error(exc: BadRequestError) -> bool:
+    message = str(exc).lower()
+    return "maximum context length" in message or "please reduce your prompt" in message
+
+
+def _truncate_middle(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    if max_chars < 40:
+        return text[:max_chars]
+    head = int(max_chars * 0.6)
+    tail = max_chars - head - 17
+    return f"{text[:head]}\n...[truncated]...\n{text[-tail:]}"
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -81,28 +97,43 @@ def _llm_answer(question: str, top: list[dict], recent_turns: list[QAMessage]) -
         history_lines.append(f"Q: {q}\nA: {a}")
     history_text = "\n\n".join(history_lines)
 
-    completion = client.chat.completions.create(
-        model=settings.openai_chat_model,
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Answer only from the provided transcript context.\n"
-                    "Return JSON with keys: answer (string), citation_indexes (int array).\n"
-                    "citation_indexes must contain indices of used context lines."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Recent conversation (latest first, optional):\n{history_text or '(none)'}\n\n"
-                    f"Question:\n{question}\n\nContext:\n{context}"
-                ),
-            },
-        ],
+    user_content = (
+        f"Recent conversation (latest first, optional):\n{history_text or '(none)'}\n\n"
+        f"Question:\n{question}\n\nContext:\n{context}"
     )
+    completion = None
+    candidate = user_content
+    for _ in range(5):
+        try:
+            completion = client.chat.completions.create(
+                model=settings.openai_chat_model,
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Answer only from the provided transcript context.\n"
+                            "Return JSON with keys: answer (string), citation_indexes (int array).\n"
+                            "citation_indexes must contain indices of used context lines."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": candidate,
+                    },
+                ],
+            )
+            break
+        except BadRequestError as exc:
+            if not _is_context_limit_error(exc):
+                raise
+            next_limit = max(1000, int(len(candidate) * 0.7))
+            if next_limit >= len(candidate):
+                raise
+            candidate = _truncate_middle(candidate, next_limit)
+    if completion is None:
+        return _fallback_answer(top), list(range(len(top)))
     content = completion.choices[0].message.content or "{}"
     try:
         payload = json.loads(content)

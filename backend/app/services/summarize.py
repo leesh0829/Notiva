@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 
+from openai import BadRequestError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import Summary, Transcript
 from app.services.chunking import chunk_transcript_segments
 from app.services.openai_client import get_openai_client
+
+SUMMARY_REDUCE_INPUT_MAX_CHARS = 6000
 
 
 def _fallback_summary(transcript: Transcript) -> tuple[str, list[dict], list[str], list[dict], str]:
@@ -38,21 +41,86 @@ def _safe_list(value: object) -> list:
     return value if isinstance(value, list) else []
 
 
+def _is_context_limit_error(exc: BadRequestError) -> bool:
+    message = str(exc).lower()
+    return "maximum context length" in message or "please reduce your prompt" in message
+
+
+def _truncate_middle(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    if max_chars < 40:
+        return text[:max_chars]
+    head = int(max_chars * 0.6)
+    tail = max_chars - head - 17
+    return f"{text[:head]}\n...[truncated]...\n{text[-tail:]}"
+
+
+def _compact_map_item(item: dict) -> dict:
+    summary = str(item.get("summary", "")).strip()[:500]
+    action_items = _safe_list(item.get("action_items"))[:8]
+    keywords = [str(keyword).strip()[:40] for keyword in _safe_list(item.get("keywords"))[:15] if str(keyword).strip()]
+    timeline_raw = _safe_list(item.get("timeline"))[:8]
+    timeline: list[dict] = []
+    for row in timeline_raw:
+        if not isinstance(row, dict):
+            continue
+        timeline.append(
+            {
+                "time_ms": int(row.get("time_ms", 0) or 0),
+                "text": str(row.get("text", "")).strip()[:120],
+            }
+        )
+    return {
+        "summary": summary,
+        "action_items": action_items,
+        "keywords": keywords,
+        "timeline": timeline,
+    }
+
+
+def _bounded_reduce_input(mapped: list[dict]) -> str:
+    compacted: list[dict] = []
+    for raw_item in mapped:
+        compact_item = _compact_map_item(raw_item)
+        candidate = compacted + [compact_item]
+        payload = json.dumps({"chunk_summaries": candidate}, ensure_ascii=False)
+        if len(payload) > SUMMARY_REDUCE_INPUT_MAX_CHARS and compacted:
+            break
+        compacted = candidate
+    if not compacted:
+        compacted = [_compact_map_item(item) for item in mapped[:1]]
+    return json.dumps({"chunk_summaries": compacted}, ensure_ascii=False)
+
+
 def _safe_chat_json(client, prompt: str, user_text: str) -> dict:
-    completion = client.chat.completions.create(
-        model=settings.openai_chat_model,
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": user_text},
-        ],
-    )
-    content = completion.choices[0].message.content or "{}"
-    try:
-        return _parse_json(content)
-    except Exception:
-        return {}
+    candidate = user_text
+    for _ in range(5):
+        try:
+            completion = client.chat.completions.create(
+                model=settings.openai_chat_model,
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": candidate},
+                ],
+            )
+            content = completion.choices[0].message.content or "{}"
+            try:
+                return _parse_json(content)
+            except Exception:
+                return {}
+        except BadRequestError as exc:
+            if not _is_context_limit_error(exc):
+                return {}
+            next_limit = max(1000, int(len(candidate) * 0.7))
+            if next_limit >= len(candidate):
+                return {}
+            candidate = _truncate_middle(candidate, next_limit)
+        except Exception:
+            return {}
+    return {}
 
 
 def _one_pass_summary(client, transcript_text: str) -> tuple[str, list[dict], list[str], list[dict]]:
@@ -106,7 +174,7 @@ def _map_reduce_summary(transcript: Transcript, client) -> tuple[str, list[dict]
         "Return JSON keys only: summary_md, action_items, keywords, timeline.\n"
         "summary_md must be markdown in Korean."
     )
-    reduce_input = json.dumps({"chunk_summaries": mapped}, ensure_ascii=False)
+    reduce_input = _bounded_reduce_input(mapped)
     parsed = _safe_chat_json(client, reduce_prompt, reduce_input)
     summary_md = str(parsed.get("summary_md", "")).strip() or "요약을 생성하지 못했습니다."
     action_items = _safe_list(parsed.get("action_items"))
