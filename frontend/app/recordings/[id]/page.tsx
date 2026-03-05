@@ -189,18 +189,24 @@ export default function RecordingDetailPage({ params }: Props) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioLoadingRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
     if (!hasStoredToken()) {
       router.replace("/login");
       return;
     }
     setAuthReady(true);
-  }, [router]);
+  }, [hydrated, router]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -367,6 +373,10 @@ export default function RecordingDetailPage({ params }: Props) {
     } finally {
       setRetrying(false);
     }
+  }
+
+  if (!hydrated) {
+    return null;
   }
 
   if (!authReady) {
