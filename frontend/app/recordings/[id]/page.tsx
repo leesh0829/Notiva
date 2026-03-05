@@ -191,6 +191,7 @@ export default function RecordingDetailPage({ params }: Props) {
   const [retrying, setRetrying] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioLoadingRef = useRef(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -215,15 +216,20 @@ export default function RecordingDetailPage({ params }: Props) {
         setRecording(meta);
         setNoteMd(meta.note_md ?? "");
 
-        if (!localAudioUrl) {
-          try {
-            const audioBlob = await getRecordingAudioBlob(params.id);
-            if (cancelled) return;
-            localAudioUrl = URL.createObjectURL(audioBlob);
-            setAudioUrl(localAudioUrl);
-          } catch {
-            // Ignore audio load failure in detail page.
-          }
+        if (!localAudioUrl && !audioLoadingRef.current) {
+          audioLoadingRef.current = true;
+          void getRecordingAudioBlob(params.id)
+            .then((audioBlob) => {
+              if (cancelled) return;
+              localAudioUrl = URL.createObjectURL(audioBlob);
+              setAudioUrl(localAudioUrl);
+            })
+            .catch(() => {
+              // Ignore audio load failure in detail page.
+            })
+            .finally(() => {
+              audioLoadingRef.current = false;
+            });
         }
 
         if (meta.status === "ready") {
@@ -523,7 +529,9 @@ export default function RecordingDetailPage({ params }: Props) {
               </div>
             </>
           ) : (
-            <p className="text-sm text-slate-600">요약 생성 중...</p>
+            <p className="text-sm text-slate-600">
+              {recording?.status === "ready" ? "요약 불러오는 중..." : "요약 생성 중..."}
+            </p>
           )}
         </section>
       ) : null}
@@ -577,7 +585,9 @@ export default function RecordingDetailPage({ params }: Props) {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-slate-600">전사 생성 중...</p>
+            <p className="text-sm text-slate-600">
+              {recording?.status === "ready" ? "전사 불러오는 중..." : "전사 생성 중..."}
+            </p>
           )}
         </section>
       ) : null}
