@@ -62,7 +62,7 @@ export default function NewRecordingPage() {
   }
 
   return (
-    <section className="space-y-6">
+    <section className="mx-auto max-w-[66rem] space-y-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div>
           <h1 className="text-2xl font-semibold">새 녹음 업로드</h1>

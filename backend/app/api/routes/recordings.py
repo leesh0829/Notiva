@@ -4,6 +4,7 @@ import io
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -288,6 +289,29 @@ def get_recording(
     return _get_owned_recording(db, recording_id, user_id)
 
 
+@router.post("/{recording_id}/retry", response_model=RecordingOut)
+def retry_recording_analysis(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> RecordingOut:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    if recording.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be retried")
+    if recording.status != "failed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Retry is only available for failed status")
+
+    recording.status = "uploaded"
+    recording.progress = 5
+    recording.error_message = None
+    db.commit()
+    db.refresh(recording)
+
+    enqueue_pipeline(recording.id)
+    db.refresh(recording)
+    return recording
+
+
 @router.patch("/{recording_id}", response_model=RecordingOut)
 def update_recording(
     recording_id: str,
@@ -391,7 +415,10 @@ def get_audio(
     recording = _get_owned_recording(db, recording_id, user_id)
     payload = read_object_bytes(recording.s3_bucket, recording.s3_key)
     filename = _recording_label(recording).replace(" ", "_")
-    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    encoded_filename = quote(filename, safe="")
+    headers = {
+        "Content-Disposition": f'inline; filename="{recording.id}"; filename*=UTF-8\'\'{encoded_filename}'
+    }
     return StreamingResponse(io.BytesIO(payload), media_type=recording.mime_type, headers=headers)
 
 

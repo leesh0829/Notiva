@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, MoreHorizontal } from "lucide-react";
+import { Download, MoreHorizontal, RotateCcw } from "lucide-react";
 
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { ProgressPill } from "@/components/progress-pill";
@@ -16,6 +16,7 @@ import {
   isAuthRequiredError,
   getSummary,
   getTranscript,
+  retryRecordingAnalysis,
   updateRecordingNote,
   updateTranscriptSegments,
 } from "@/lib/api";
@@ -185,6 +186,7 @@ export default function RecordingDetailPage({ params }: Props) {
   const [showTimestamp, setShowTimestamp] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -329,6 +331,29 @@ export default function RecordingDetailPage({ params }: Props) {
     }
   }
 
+  async function onRetryAnalysis() {
+    if (!recording || retrying) return;
+    try {
+      setRetrying(true);
+      setError(null);
+      const updated = await retryRecordingAnalysis(params.id);
+      setRecording(updated);
+      setSummary(null);
+      setTranscript(null);
+      setQaTurns([]);
+      setTab("summary");
+      setMenuOpen(false);
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
+      setError(err instanceof Error ? err.message : "재분석 요청에 실패했습니다.");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   if (!authReady) {
     return <p className="text-sm text-slate-600">인증 확인 중...</p>;
   }
@@ -368,6 +393,17 @@ export default function RecordingDetailPage({ params }: Props) {
             </button>
             {menuOpen ? (
               <div className="absolute right-0 top-11 z-10 w-44 rounded-md border border-slate-200 bg-white p-1 shadow">
+                {recording?.status === "failed" ? (
+                  <button
+                    type="button"
+                    disabled={retrying}
+                    className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void onRetryAnalysis()}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {retrying ? "재시도 요청 중..." : "AI 재분석 시도"}
+                  </button>
+                ) : null}
                 {(["txt", "doc", "hwp", "pdf"] as const).map((ext) => (
                   <button
                     key={ext}

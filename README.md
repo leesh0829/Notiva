@@ -169,6 +169,21 @@ npm install
 npm run dev
 ```
 
+빠른 실행(`.bat`) 방식:
+```powershell
+# 프로젝트 루트에서 더블클릭 또는 터미널 실행
+.\start-notiva.bat   # 백엔드(8000) + 프론트(3000) 시작
+.\stop-notiva.bat    # 두 서버 종료
+
+# 고급 명령
+.\notiva-server.bat status
+.\notiva-server.bat restart
+```
+
+주의:
+- `backend\.venv\Scripts\python.exe`가 있어야 합니다.
+- 최초 1회는 `frontend`에서 `npm install`이 필요합니다.
+
 ### 5-2) macOS/Linux 기준
 
 ```bash
