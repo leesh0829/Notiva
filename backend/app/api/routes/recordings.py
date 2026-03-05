@@ -108,6 +108,7 @@ def _collapse_repeated_units(text: str) -> str:
     normalized = " ".join((text or "").split()).strip()
     if not normalized:
         return ""
+    normalized = _collapse_repeated_token_phrases(normalized)
     units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(normalized) if unit.strip()]
     if len(units) < 2:
         return normalized
@@ -119,7 +120,44 @@ def _collapse_repeated_units(text: str) -> str:
             continue
         compact.append(unit)
         last_key = key
-    return " ".join(compact) if compact else normalized
+    collapsed = " ".join(compact) if compact else normalized
+    return _collapse_repeated_token_phrases(collapsed)
+
+
+def _collapse_repeated_token_phrases(text: str) -> str:
+    words = [word for word in text.split(" ") if word]
+    if len(words) < 12:
+        return text
+
+    output: list[str] = []
+    index = 0
+    total = len(words)
+    while index < total:
+        best_window = 0
+        best_repeat = 0
+        max_window = min(18, (total - index) // 2)
+        for window in range(3, max_window + 1):
+            pattern = words[index : index + window]
+            if len(set(pattern)) < 2:
+                continue
+            repeat = 1
+            while index + (repeat + 1) * window <= total:
+                next_slice = words[index + repeat * window : index + (repeat + 1) * window]
+                if next_slice != pattern:
+                    break
+                repeat += 1
+            if repeat >= 2 and window * repeat > best_window * best_repeat:
+                best_window = window
+                best_repeat = repeat
+
+        if best_repeat >= 2:
+            output.extend(words[index : index + best_window])
+            index += best_window * best_repeat
+            continue
+
+        output.append(words[index])
+        index += 1
+    return " ".join(output)
 
 
 def _split_text_by_chars(text: str, max_chars: int) -> list[str]:
