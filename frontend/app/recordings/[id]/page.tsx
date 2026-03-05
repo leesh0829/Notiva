@@ -182,7 +182,7 @@ export default function RecordingDetailPage({ params }: Props) {
   const [loadingQa, setLoadingQa] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [savingSpeaker, setSavingSpeaker] = useState(false);
-  const [memoTab, setMemoTab] = useState<MemoView>("write");
+  const [memoTab, setMemoTab] = useState<MemoView>("view");
   const [noteMd, setNoteMd] = useState("");
   const [showSpeaker, setShowSpeaker] = useState(false);
   const [showTimestamp, setShowTimestamp] = useState(true);
