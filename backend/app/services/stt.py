@@ -15,6 +15,8 @@ MAX_STT_FILE_BYTES = 24 * 1024 * 1024
 CHUNK_SECONDS = 15 * 60
 _DURATION_PATTERN = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
+_SEGMENT_TARGET_CHARS = 260
+_SEGMENT_MAX_CHARS = 420
 
 
 def _placeholder_transcription() -> tuple[str, list[dict], str]:
@@ -143,6 +145,78 @@ def _collapse_repeated_units(text: str) -> str:
     return " ".join(compact) if compact else normalized
 
 
+def _split_text_by_chars(text: str, max_chars: int) -> list[str]:
+    clean = text.strip()
+    if not clean:
+        return []
+    if len(clean) <= max_chars:
+        return [clean]
+    parts: list[str] = []
+    cursor = 0
+    total = len(clean)
+    while cursor < total:
+        end = min(total, cursor + max_chars)
+        if end < total:
+            split_at = clean.rfind(" ", cursor + max(1, max_chars // 2), end)
+            if split_at > cursor:
+                end = split_at
+        piece = clean[cursor:end].strip()
+        if piece:
+            parts.append(piece)
+        if end <= cursor:
+            end = min(total, cursor + max_chars)
+        cursor = end
+    return parts
+
+
+def _approximate_segments(text: str, start_ms: int, end_ms: int) -> list[dict]:
+    cleaned = _collapse_repeated_units(text)
+    if not cleaned:
+        return []
+    units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(cleaned) if unit.strip()]
+    if not units:
+        units = [cleaned]
+    grouped: list[str] = []
+    current = ""
+    for unit in units:
+        chunks = _split_text_by_chars(unit, _SEGMENT_MAX_CHARS) if len(unit) > _SEGMENT_MAX_CHARS else [unit]
+        for chunk in chunks:
+            candidate = f"{current} {chunk}".strip() if current else chunk
+            if current and len(candidate) > _SEGMENT_MAX_CHARS:
+                grouped.append(current)
+                current = chunk
+                continue
+            if not current:
+                current = chunk
+            elif len(candidate) <= _SEGMENT_TARGET_CHARS:
+                current = candidate
+            else:
+                grouped.append(current)
+                current = chunk
+    if current:
+        grouped.append(current)
+    if not grouped:
+        return []
+
+    span = max(0, end_ms - start_ms)
+    if span <= 0:
+        return [{"start_ms": start_ms, "end_ms": max(start_ms + 1, start_ms + len(grouped[0]) * 45), "text": grouped[0]}]
+    total_chars = max(1, sum(len(part) for part in grouped))
+    cursor = start_ms
+    result: list[dict] = []
+    for idx, part in enumerate(grouped):
+        if idx == len(grouped) - 1:
+            piece_end = end_ms
+        else:
+            piece_span = max(300, int(span * (len(part) / total_chars)))
+            piece_end = min(end_ms, cursor + piece_span)
+        if piece_end <= cursor:
+            piece_end = min(end_ms, cursor + 300)
+        result.append({"start_ms": cursor, "end_ms": piece_end, "text": part})
+        cursor = piece_end
+    return result
+
+
 def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, list[dict], str]:
     try:
         import imageio_ffmpeg
@@ -197,11 +271,17 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
             raise RuntimeError("Failed to split audio for transcription")
 
         for chunk_file in chunk_files:
+            duration_ms = _duration_ms_with_ffmpeg(ffmpeg_exe, chunk_file)
+            if duration_ms <= 0:
+                duration_ms = CHUNK_SECONDS * 1000
             chunk_bytes = chunk_file.read_bytes()
             result = _transcribe_once(client, chunk_bytes, chunk_file.name, "audio/mpeg")
             text, chunk_language, chunk_segments = _extract_text_language_segments(result)
             if chunk_language and chunk_language != "unknown":
                 language = chunk_language
+
+            if not chunk_segments and text:
+                chunk_segments = _approximate_segments(text, 0, duration_ms)
 
             if chunk_segments:
                 shifted = [
@@ -216,11 +296,8 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
             if text:
                 full_text_parts.append(text)
 
-            duration_ms = _duration_ms_with_ffmpeg(ffmpeg_exe, chunk_file)
             if duration_ms <= 0 and chunk_segments:
                 duration_ms = max(segment["end_ms"] for segment in chunk_segments)
-            if duration_ms <= 0:
-                duration_ms = CHUNK_SECONDS * 1000
             offset_ms += duration_ms
 
     full_text = " ".join(part.strip() for part in full_text_parts if part.strip()).strip()

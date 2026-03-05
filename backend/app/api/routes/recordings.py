@@ -39,6 +39,8 @@ from app.tasks.jobs import enqueue_pipeline
 
 router = APIRouter()
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
+_SEGMENT_TARGET_CHARS = 260
+_SEGMENT_MAX_CHARS = 420
 
 
 def _estimate_tokens(text: str) -> int:
@@ -120,18 +122,108 @@ def _collapse_repeated_units(text: str) -> str:
     return " ".join(compact) if compact else normalized
 
 
+def _split_text_by_chars(text: str, max_chars: int) -> list[str]:
+    clean = text.strip()
+    if not clean:
+        return []
+    if len(clean) <= max_chars:
+        return [clean]
+
+    parts: list[str] = []
+    cursor = 0
+    total = len(clean)
+    while cursor < total:
+        end = min(total, cursor + max_chars)
+        if end < total:
+            split_at = clean.rfind(" ", cursor + max(1, max_chars // 2), end)
+            if split_at > cursor:
+                end = split_at
+        piece = clean[cursor:end].strip()
+        if piece:
+            parts.append(piece)
+        if end <= cursor:
+            end = min(total, cursor + max_chars)
+        cursor = end
+    return parts
+
+
+def _split_segment_for_readability(segment: dict) -> list[dict]:
+    text = str(segment.get("text", "")).strip()
+    if not text:
+        return []
+
+    units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(text) if unit.strip()]
+    if not units:
+        units = [text]
+
+    grouped: list[str] = []
+    current = ""
+    for unit in units:
+        if len(unit) > _SEGMENT_MAX_CHARS:
+            chunks = _split_text_by_chars(unit, _SEGMENT_MAX_CHARS)
+        else:
+            chunks = [unit]
+        for chunk in chunks:
+            candidate = f"{current} {chunk}".strip() if current else chunk
+            if current and len(candidate) > _SEGMENT_MAX_CHARS:
+                grouped.append(current)
+                current = chunk
+                continue
+            if not current:
+                current = chunk
+            elif len(candidate) <= _SEGMENT_TARGET_CHARS:
+                current = candidate
+            else:
+                grouped.append(current)
+                current = chunk
+    if current:
+        grouped.append(current)
+
+    if len(grouped) <= 1:
+        return [segment]
+
+    start_ms = int(segment.get("start_ms", 0) or 0)
+    end_ms = int(segment.get("end_ms", start_ms) or start_ms)
+    span_ms = max(0, end_ms - start_ms)
+    speaker = segment.get("speaker")
+
+    result: list[dict] = []
+    if span_ms <= 0:
+        cursor = start_ms
+        for part in grouped:
+            piece_span = max(1200, len(part) * 45)
+            result.append({"start_ms": cursor, "end_ms": cursor + piece_span, "text": part, "speaker": speaker})
+            cursor += piece_span
+        return result
+
+    total_chars = max(1, sum(len(part) for part in grouped))
+    cursor = start_ms
+    for idx, part in enumerate(grouped):
+        if idx == len(grouped) - 1:
+            piece_end = end_ms
+        else:
+            piece_span = max(300, int(span_ms * (len(part) / total_chars)))
+            piece_end = min(end_ms, cursor + piece_span)
+        if piece_end <= cursor:
+            piece_end = min(end_ms, cursor + 300)
+        result.append({"start_ms": cursor, "end_ms": piece_end, "text": part, "speaker": speaker})
+        cursor = piece_end
+    return result
+
+
 def _normalized_segments(segments: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     last_key = ""
     for segment in segments:
         coerced = _coerce_segment(segment, len(normalized))
-        key = coerced["text"].strip().lower()
-        if not key:
-            continue
-        if key == last_key:
-            continue
-        normalized.append(coerced)
-        last_key = key
+        for expanded in _split_segment_for_readability(coerced):
+            key = expanded["text"].strip().lower()
+            if not key:
+                continue
+            if key == last_key:
+                continue
+            normalized.append(expanded)
+            last_key = key
     return normalized
 
 
