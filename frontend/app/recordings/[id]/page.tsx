@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Download, MoreHorizontal, RotateCcw } from "lucide-react";
 
+import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { ProgressPill } from "@/components/progress-pill";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ import {
   updateRecordingNote,
   updateTranscriptSegments,
 } from "@/lib/api";
-import type { QATurn, Recording, SummaryResponse, TranscriptResponse } from "@/lib/types";
+import type { QATurn, Recording, RecordingStatus, SummaryResponse, TranscriptResponse } from "@/lib/types";
 
 const TABS = ["summary", "transcript", "qa", "memo"] as const;
 const TAB_LABELS: Record<(typeof TABS)[number], string> = {
@@ -31,6 +32,7 @@ const TAB_LABELS: Record<(typeof TABS)[number], string> = {
 };
 type Tab = (typeof TABS)[number];
 type MemoView = "write" | "view";
+const PROCESSING_STATUSES: RecordingStatus[] = ["uploaded", "transcribing", "transcribed", "summarizing", "indexing"];
 
 interface Props {
   params: { id: string };
@@ -260,6 +262,13 @@ export default function RecordingDetailPage({ params }: Props) {
   }, [authReady, params.id, router]);
 
   const canAsk = useMemo(() => recording?.status === "ready", [recording?.status]);
+  const showAnalysisPopup = useMemo(() => {
+    if (!recording) return retrying;
+    return retrying || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, retrying]);
+  const popupStatus: RecordingStatus =
+    retrying && recording?.status === "failed" ? "uploaded" : (recording?.status ?? "uploaded");
+  const popupProgress = retrying && recording?.status === "failed" ? 5 : (recording?.progress ?? 5);
 
   useEffect(() => {
     if (tab === "qa") {
@@ -366,6 +375,12 @@ export default function RecordingDetailPage({ params }: Props) {
 
   return (
     <section className="mx-auto max-w-[66rem] space-y-5">
+      <AnalysisProgressPopup
+        visible={showAnalysisPopup}
+        status={popupStatus}
+        progress={popupProgress}
+        title={recording?.title ?? undefined}
+      />
       <div>
         <Button asChild variant="outline" size="sm">
           <a href="/dashboard">대시보드로 돌아가기</a>
