@@ -13,6 +13,7 @@ from app.services.storage import read_object_bytes
 
 MAX_STT_FILE_BYTES = 24 * 1024 * 1024
 CHUNK_SECONDS = 15 * 60
+CHUNK_BITRATE = "64k"
 _DURATION_PATTERN = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
 _SEGMENT_TARGET_CHARS = 260
@@ -53,10 +54,16 @@ def _is_invalid_audio_error(exc: BadRequestError) -> bool:
 
 
 def _transcribe_once(client, payload: bytes, filename: str, mime: str):
+    request_kwargs = {
+        "model": settings.openai_stt_model,
+        "file": (filename, payload, mime),
+    }
+    if settings.openai_stt_language:
+        request_kwargs["language"] = settings.openai_stt_language
+
     try:
         return client.audio.transcriptions.create(
-            model=settings.openai_stt_model,
-            file=(filename, payload, mime),
+            **request_kwargs,
             response_format="json",
         )
     except BadRequestError as exc:
@@ -64,8 +71,7 @@ def _transcribe_once(client, payload: bytes, filename: str, mime: str):
             raise
         # Some model revisions only accept text output.
         return client.audio.transcriptions.create(
-            model=settings.openai_stt_model,
-            file=(filename, payload, mime),
+            **request_kwargs,
             response_format="text",
         )
 
@@ -291,7 +297,7 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
                 "-c:a",
                 "libmp3lame",
                 "-b:a",
-                "32k",
+                CHUNK_BITRATE,
                 "-f",
                 "segment",
                 "-segment_time",

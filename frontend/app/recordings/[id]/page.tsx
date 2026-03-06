@@ -274,13 +274,16 @@ export default function RecordingDetailPage({ params }: Props) {
   }, [authReady, params.id, router]);
 
   const canAsk = useMemo(() => recording?.status === "ready", [recording?.status]);
+  const retryDisabled = useMemo(() => {
+    if (!recording) return true;
+    return retrying || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, retrying]);
   const showAnalysisPopup = useMemo(() => {
     if (!recording) return retrying;
     return retrying || PROCESSING_STATUSES.includes(recording.status);
   }, [recording, retrying]);
-  const popupStatus: RecordingStatus =
-    retrying && recording?.status === "failed" ? "uploaded" : (recording?.status ?? "uploaded");
-  const popupProgress = retrying && recording?.status === "failed" ? 5 : (recording?.progress ?? 5);
+  const popupStatus: RecordingStatus = retrying ? "uploaded" : (recording?.status ?? "uploaded");
+  const popupProgress = retrying ? 5 : (recording?.progress ?? 5);
 
   useEffect(() => {
     if (tab === "qa") {
@@ -353,7 +356,7 @@ export default function RecordingDetailPage({ params }: Props) {
   }
 
   async function onRetryAnalysis() {
-    if (!recording || retrying) return;
+    if (!recording || retryDisabled) return;
     try {
       setRetrying(true);
       setError(null);
@@ -424,15 +427,15 @@ export default function RecordingDetailPage({ params }: Props) {
             </button>
             {menuOpen ? (
               <div className="absolute right-0 top-11 z-10 w-44 rounded-md border border-slate-200 bg-white p-1 shadow">
-                {recording?.status === "failed" ? (
+                {recording ? (
                   <button
                     type="button"
-                    disabled={retrying}
+                    disabled={retryDisabled}
                     className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                     onClick={() => void onRetryAnalysis()}
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
-                    {retrying ? "재시도 요청 중..." : "AI 재분석 시도"}
+                    {retrying ? "재분석 요청 중..." : "AI 재분석"}
                   </button>
                 ) : null}
                 {(["txt", "doc", "hwp", "pdf"] as const).map((ext) => (

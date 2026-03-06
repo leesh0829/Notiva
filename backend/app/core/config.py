@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     openai_stt_model: str = "gpt-4o-mini-transcribe"
+    openai_stt_language: str | None = "ko"
     openai_chat_model: str = "gpt-4.1-mini"
     openai_embed_model: str = "text-embedding-3-small"
     openai_timeout_sec: float = 60.0

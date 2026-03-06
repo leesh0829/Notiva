@@ -454,8 +454,8 @@ def retry_recording_analysis(
     recording = _get_owned_recording(db, recording_id, user_id)
     if recording.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be retried")
-    if recording.status != "failed":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Retry is only available for failed status")
+    if recording.status in {"uploaded", "transcribing", "transcribed", "summarizing", "indexing"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
 
     recording.status = "uploaded"
     recording.progress = 5

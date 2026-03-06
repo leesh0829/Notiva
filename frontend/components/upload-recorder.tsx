@@ -24,7 +24,21 @@ export function UploadRecorder({ onFileReady }: Props) {
     try {
       setError(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const preferredMimeTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ];
+      const supportedMime = preferredMimeTypes.find(
+        (mime) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(mime),
+      );
+      const recorderOptions: MediaRecorderOptions = {
+        audioBitsPerSecond: 128000,
+      };
+      if (supportedMime) {
+        recorderOptions.mimeType = supportedMime;
+      }
+      const recorder = new MediaRecorder(stream, recorderOptions);
       chunksRef.current = [];
 
       recorder.ondataavailable = (event) => {
@@ -34,9 +48,11 @@ export function UploadRecorder({ onFileReady }: Props) {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const file = new File([blob], `web-record-${Date.now()}.webm`, {
-          type: "audio/webm",
+        const mimeType = recorder.mimeType || supportedMime || "audio/webm";
+        const extension = mimeType.includes("mp4") ? "m4a" : mimeType.includes("ogg") ? "ogg" : "webm";
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        const file = new File([blob], `web-record-${Date.now()}.${extension}`, {
+          type: mimeType,
         });
         onFileReady(file, "web_record");
       };
