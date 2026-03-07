@@ -39,6 +39,7 @@ from app.tasks.jobs import enqueue_pipeline
 
 router = APIRouter()
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
+_LONG_REPEAT_CHAR_PATTERN = re.compile(r"([^\s])\1{11,}")
 _SEGMENT_TARGET_CHARS = 260
 _SEGMENT_MAX_CHARS = 420
 
@@ -108,10 +109,13 @@ def _collapse_repeated_units(text: str) -> str:
     normalized = " ".join((text or "").split()).strip()
     if not normalized:
         return ""
+    normalized = _strip_low_information_noise(normalized)
+    if not normalized:
+        return ""
     normalized = _collapse_repeated_token_phrases(normalized)
     units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(normalized) if unit.strip()]
     if len(units) < 2:
-        return normalized
+        return _strip_low_information_noise(normalized)
     compact: list[str] = []
     last_key = ""
     for unit in units:
@@ -121,7 +125,20 @@ def _collapse_repeated_units(text: str) -> str:
         compact.append(unit)
         last_key = key
     collapsed = " ".join(compact) if compact else normalized
-    return _collapse_repeated_token_phrases(collapsed)
+    collapsed = _collapse_repeated_token_phrases(collapsed)
+    return _strip_low_information_noise(collapsed)
+
+
+def _strip_low_information_noise(text: str) -> str:
+    compact = "".join((text or "").split())
+    if len(compact) < 36:
+        return text
+    if not _LONG_REPEAT_CHAR_PATTERN.search(compact):
+        return text
+    unique_ratio = len(set(compact)) / max(1, len(compact))
+    if unique_ratio > 0.25:
+        return text
+    return ""
 
 
 def _collapse_repeated_token_phrases(text: str) -> str:

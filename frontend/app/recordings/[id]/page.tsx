@@ -55,6 +55,18 @@ function truncate(text: string, max = 180): string {
   return `${clean.slice(0, max)}...`;
 }
 
+function sanitizeTranscriptTextForView(text: string): string {
+  const raw = (text || "").trim();
+  if (!raw) return raw;
+  const compact = raw.replace(/\s+/g, "");
+  if (compact.length < 36) return raw;
+  const hasLongRepeat = /([^\s])\1{11,}/.test(compact);
+  if (!hasLongRepeat) return raw;
+  const uniqueRatio = new Set(compact).size / compact.length;
+  if (uniqueRatio > 0.25) return raw;
+  return "[반복 노이즈로 추정되는 구간]";
+}
+
 function exportTextContent(recording: Recording | null, summary: SummaryResponse | null): string {
   const lines = [
     `제목: ${recording?.title || recording?.id || "-"}`,
@@ -592,7 +604,10 @@ export default function RecordingDetailPage({ params }: Props) {
                     ) : null}
                   </div>
                   <div className="space-y-2 border-l-2 border-slate-200 pl-3">
-                    <MarkdownPreview markdown={segment.text} className="space-y-4 break-keep text-[15px] leading-8" />
+                    <MarkdownPreview
+                      markdown={sanitizeTranscriptTextForView(segment.text)}
+                      className="space-y-4 break-words [overflow-wrap:anywhere] text-[15px] leading-8"
+                    />
                   </div>
                 </button>
               ))}
