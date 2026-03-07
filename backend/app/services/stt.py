@@ -51,6 +51,16 @@ def _is_invalid_audio_error(exc: BadRequestError) -> bool:
     return (
         "audio file might be corrupted or unsupported" in message
         or ("invalid_value" in message and "param" in message and "file" in message)
+        or _is_audio_duration_limit_error(message)
+    )
+
+
+def _is_audio_duration_limit_error(message: str) -> bool:
+    normalized = (message or "").lower()
+    return (
+        "audio duration" in normalized
+        and "longer than" in normalized
+        and "maximum for this model" in normalized
     )
 
 
