@@ -82,6 +82,15 @@ def test_recording_smoke_flow() -> None:
     detail = client.get(f"/recordings/{recording_id}", headers=headers)
     assert detail.status_code == 200
 
+    audio = client.get(f"/recordings/{recording_id}/audio", headers=headers)
+    assert audio.status_code == 200
+
+    delete_audio = client.delete(f"/recordings/{recording_id}/audio", headers=headers)
+    assert delete_audio.status_code == 204
+
+    audio_after_delete = client.get(f"/recordings/{recording_id}/audio", headers=headers)
+    assert audio_after_delete.status_code == 404
+
     transcript = client.get(f"/recordings/{recording_id}/transcript", headers=headers)
     assert transcript.status_code == 200
     assert len(transcript.json()["segments"]) > 0

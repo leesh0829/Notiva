@@ -238,6 +238,12 @@ export async function getRecordingAudioBlob(id: string): Promise<Blob> {
   return requestBlob(`/recordings/${id}/audio`);
 }
 
+export async function deleteRecordingAudio(id: string): Promise<void> {
+  await request<unknown>(`/recordings/${id}/audio`, {
+    method: "DELETE",
+  });
+}
+
 export async function getTranscript(id: string): Promise<TranscriptResponse> {
   return request<TranscriptResponse>(`/recordings/${id}/transcript`);
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, MoreHorizontal, RotateCcw } from "lucide-react";
+import { Download, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react";
 
 import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
 import { MarkdownPreview } from "@/components/markdown-preview";
@@ -10,6 +10,7 @@ import { ProgressPill } from "@/components/progress-pill";
 import { Button } from "@/components/ui/button";
 import {
   askQuestion,
+  deleteRecordingAudio,
   getQaMessages,
   getRecording,
   getRecordingAudioBlob,
@@ -199,8 +200,10 @@ export default function RecordingDetailPage({ params }: Props) {
   const [showSpeaker, setShowSpeaker] = useState(false);
   const [showTimestamp, setShowTimestamp] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioLoadDone, setAudioLoadDone] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [deletingAudio, setDeletingAudio] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -222,6 +225,7 @@ export default function RecordingDetailPage({ params }: Props) {
 
   useEffect(() => {
     if (!authReady) return;
+    setAudioLoadDone(false);
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
@@ -241,9 +245,11 @@ export default function RecordingDetailPage({ params }: Props) {
               if (cancelled) return;
               localAudioUrl = URL.createObjectURL(audioBlob);
               setAudioUrl(localAudioUrl);
+              setAudioLoadDone(true);
             })
             .catch(() => {
-              // Ignore audio load failure in detail page.
+              if (cancelled) return;
+              setAudioLoadDone(true);
             })
             .finally(() => {
               audioLoadingRef.current = false;
@@ -294,6 +300,11 @@ export default function RecordingDetailPage({ params }: Props) {
     if (!recording) return retrying;
     return retrying || PROCESSING_STATUSES.includes(recording.status);
   }, [recording, retrying]);
+  const deleteAudioDisabled = useMemo(() => {
+    if (!recording) return true;
+    if (deletingAudio || PROCESSING_STATUSES.includes(recording.status)) return true;
+    return audioLoadDone && !audioUrl;
+  }, [audioLoadDone, audioUrl, deletingAudio, recording]);
   const popupStatus: RecordingStatus = retrying ? "uploaded" : (recording?.status ?? "uploaded");
   const popupProgress = retrying ? 5 : (recording?.progress ?? 5);
 
@@ -390,6 +401,38 @@ export default function RecordingDetailPage({ params }: Props) {
     }
   }
 
+  async function onDeleteAudio() {
+    if (!recording || deleteAudioDisabled) return;
+    const ok = window.confirm(
+      "음성 파일만 삭제하시겠습니까?\n삭제 후에는 플레이어/오디오 다운로드를 사용할 수 없습니다.",
+    );
+    if (!ok) return;
+    try {
+      setDeletingAudio(true);
+      setError(null);
+      await deleteRecordingAudio(params.id);
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      setAudioUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return null;
+      });
+      setAudioLoadDone(true);
+      setMenuOpen(false);
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
+      setError(err instanceof Error ? err.message : "음성 파일 삭제에 실패했습니다.");
+    } finally {
+      setDeletingAudio(false);
+    }
+  }
+
   if (!hydrated) {
     return null;
   }
@@ -450,6 +493,17 @@ export default function RecordingDetailPage({ params }: Props) {
                     {retrying ? "재분석 요청 중..." : "AI 재분석"}
                   </button>
                 ) : null}
+                {recording ? (
+                  <button
+                    type="button"
+                    disabled={deleteAudioDisabled}
+                    className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void onDeleteAudio()}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deletingAudio ? "음성 삭제 중..." : "음성 파일 삭제"}
+                  </button>
+                ) : null}
                 {(["txt", "doc", "hwp", "pdf"] as const).map((ext) => (
                   <button
                     key={ext}
@@ -479,6 +533,10 @@ export default function RecordingDetailPage({ params }: Props) {
           <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <p className="mb-2 text-xs font-semibold text-slate-600">오디오 재생</p>
             <audio ref={audioRef} src={audioUrl} controls className="w-full" />
+          </div>
+        ) : audioLoadDone ? (
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="text-sm text-slate-500">오디오 파일이 없거나 삭제되었습니다.</p>
           </div>
         ) : null}
       </div>

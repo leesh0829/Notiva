@@ -42,6 +42,7 @@ _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
 _LONG_REPEAT_CHAR_PATTERN = re.compile(r"([^\s])\1{11,}")
 _SEGMENT_TARGET_CHARS = 260
 _SEGMENT_MAX_CHARS = 420
+_IN_PROGRESS_STATUSES = {"uploaded", "transcribing", "transcribed", "summarizing", "indexing"}
 
 
 def _estimate_tokens(text: str) -> int:
@@ -471,7 +472,7 @@ def retry_recording_analysis(
     recording = _get_owned_recording(db, recording_id, user_id)
     if recording.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be retried")
-    if recording.status in {"uploaded", "transcribing", "transcribed", "summarizing", "indexing"}:
+    if recording.status in _IN_PROGRESS_STATUSES:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
 
     recording.status = "uploaded"
@@ -586,13 +587,34 @@ def get_audio(
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     recording = _get_owned_recording(db, recording_id, user_id)
-    payload = read_object_bytes(recording.s3_bucket, recording.s3_key)
+    try:
+        payload = read_object_bytes(recording.s3_bucket, recording.s3_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio not found") from exc
     filename = _recording_label(recording).replace(" ", "_")
     encoded_filename = quote(filename, safe="")
     headers = {
         "Content-Disposition": f'inline; filename="{recording.id}"; filename*=UTF-8\'\'{encoded_filename}'
     }
     return StreamingResponse(io.BytesIO(payload), media_type=recording.mime_type, headers=headers)
+
+
+@router.delete("/{recording_id}/audio", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_audio(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    if recording.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be modified")
+    if recording.status in _IN_PROGRESS_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
+    try:
+        delete_object(recording.s3_bucket, recording.s3_key)
+    except Exception:
+        pass
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{recording_id}/transcript", response_model=TranscriptOut)
