@@ -12,6 +12,7 @@ export function UploadRecorder({ onFileReady }: Props) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const [recording, setRecording] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -41,6 +42,19 @@ export function UploadRecorder({ onFileReady }: Props) {
       const recorder = new MediaRecorder(stream, recorderOptions);
       chunksRef.current = [];
 
+      recorder.onstart = () => {
+        setRecording(true);
+        setPaused(false);
+      };
+
+      recorder.onpause = () => {
+        setPaused(true);
+      };
+
+      recorder.onresume = () => {
+        setPaused(false);
+      };
+
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           chunksRef.current.push(event.data);
@@ -48,6 +62,8 @@ export function UploadRecorder({ onFileReady }: Props) {
       };
 
       recorder.onstop = () => {
+        setRecording(false);
+        setPaused(false);
         const mimeType = recorder.mimeType || supportedMime || "audio/webm";
         const extension = mimeType.includes("mp4") ? "m4a" : mimeType.includes("ogg") ? "ogg" : "webm";
         const blob = new Blob(chunksRef.current, { type: mimeType });
@@ -59,16 +75,36 @@ export function UploadRecorder({ onFileReady }: Props) {
 
       recorder.start();
       mediaRecorderRef.current = recorder;
-      setRecording(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "녹음을 시작할 수 없습니다.");
     }
   }
 
+  function pauseRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state !== "recording") return;
+    try {
+      recorder.pause();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "녹음을 일시정지할 수 없습니다.");
+    }
+  }
+
+  function resumeRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state !== "paused") return;
+    try {
+      recorder.resume();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "녹음을 이어서 시작할 수 없습니다.");
+    }
+  }
+
   function stopRecording() {
-    mediaRecorderRef.current?.stop();
-    mediaRecorderRef.current?.stream.getTracks().forEach((track) => track.stop());
-    setRecording(false);
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    recorder.stop();
+    recorder.stream.getTracks().forEach((track) => track.stop());
   }
 
   return (
@@ -79,11 +115,25 @@ export function UploadRecorder({ onFileReady }: Props) {
             웹 녹음 시작
           </Button>
         ) : (
-          <Button type="button" onClick={stopRecording}>
-            녹음 중지
-          </Button>
+          <>
+            <Button type="button" onClick={stopRecording}>
+              녹음 중지
+            </Button>
+            {!paused ? (
+              <Button type="button" variant="outline" onClick={pauseRecording}>
+                녹음 일시정지
+              </Button>
+            ) : (
+              <Button type="button" variant="secondary" onClick={resumeRecording}>
+                이어서 녹음
+              </Button>
+            )}
+          </>
         )}
       </div>
+      {recording ? (
+        <p className="text-sm text-slate-600">{paused ? "녹음이 일시정지되었습니다." : "녹음 중입니다."}</p>
+      ) : null}
       {error ? <p className="text-sm text-rose-600">{error}</p> : null}
       <input
         className="block w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
