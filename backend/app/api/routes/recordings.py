@@ -101,8 +101,6 @@ def _coerce_segment(segment: dict, idx: int) -> dict:
     speaker = segment.get("speaker")
     if speaker is not None:
         speaker = str(speaker).strip() or None
-    if not speaker:
-        speaker = f"화자 {(idx % 2) + 1}"
     return {"start_ms": start_ms, "end_ms": end_ms, "text": text, "speaker": speaker}
 
 
