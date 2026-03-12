@@ -14,6 +14,7 @@ import {
   getQaMessages,
   getRecording,
   getRecordingAudioBlob,
+  regenerateRecordingSummary,
   hasStoredToken,
   isAuthRequiredError,
   getSummary,
@@ -272,6 +273,7 @@ export default function RecordingDetailPage({ params }: Props) {
   const [audioLoadDone, setAudioLoadDone] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [regeneratingSummary, setRegeneratingSummary] = useState(false);
   const [deletingAudio, setDeletingAudio] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
@@ -365,17 +367,25 @@ export default function RecordingDetailPage({ params }: Props) {
     if (!recording) return true;
     return retrying || PROCESSING_STATUSES.includes(recording.status);
   }, [recording, retrying]);
+  const regenerateSummaryDisabled = useMemo(() => {
+    if (!recording) return true;
+    return regeneratingSummary || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, regeneratingSummary]);
   const showAnalysisPopup = useMemo(() => {
-    if (!recording) return retrying;
-    return retrying || PROCESSING_STATUSES.includes(recording.status);
-  }, [recording, retrying]);
+    if (!recording) return retrying || regeneratingSummary;
+    return retrying || regeneratingSummary || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, regeneratingSummary, retrying]);
   const deleteAudioDisabled = useMemo(() => {
     if (!recording) return true;
     if (deletingAudio || PROCESSING_STATUSES.includes(recording.status)) return true;
     return audioLoadDone && !audioUrl;
   }, [audioLoadDone, audioUrl, deletingAudio, recording]);
-  const popupStatus: RecordingStatus = retrying ? "uploaded" : (recording?.status ?? "uploaded");
-  const popupProgress = retrying ? 5 : (recording?.progress ?? 5);
+  const popupStatus: RecordingStatus = retrying
+    ? "uploaded"
+    : regeneratingSummary
+      ? "summarizing"
+      : (recording?.status ?? "uploaded");
+  const popupProgress = retrying ? 5 : regeneratingSummary ? 70 : (recording?.progress ?? 5);
   const summarySections = useMemo(
     () => parseSummarySections(summary?.summary_md ?? ""),
     [summary?.summary_md],
@@ -474,6 +484,27 @@ export default function RecordingDetailPage({ params }: Props) {
     }
   }
 
+  async function onRegenerateSummary() {
+    if (!recording || regenerateSummaryDisabled) return;
+    try {
+      setRegeneratingSummary(true);
+      setError(null);
+      const updated = await regenerateRecordingSummary(params.id);
+      setRecording(updated);
+      setSummary(null);
+      setTab("summary");
+      setMenuOpen(false);
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
+      setError(err instanceof Error ? err.message : "요약 재생성 요청에 실패했습니다.");
+    } finally {
+      setRegeneratingSummary(false);
+    }
+  }
+
   async function onDeleteAudio() {
     if (!recording || deleteAudioDisabled) return;
     const ok = window.confirm(
@@ -564,6 +595,17 @@ export default function RecordingDetailPage({ params }: Props) {
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                     {retrying ? "재분석 요청 중..." : "AI 재분석"}
+                  </button>
+                ) : null}
+                {recording ? (
+                  <button
+                    type="button"
+                    disabled={regenerateSummaryDisabled}
+                    className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void onRegenerateSummary()}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {regeneratingSummary ? "요약 재생성 중..." : "요약만 재생성"}
                   </button>
                 ) : null}
                 {recording ? (

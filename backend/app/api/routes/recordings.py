@@ -35,7 +35,7 @@ from app.schemas.recording import (
 )
 from app.services.rag import answer_question
 from app.services.storage import delete_object, read_object_bytes, upload_to_s3
-from app.tasks.jobs import enqueue_pipeline
+from app.tasks.jobs import enqueue_pipeline, enqueue_summary_refresh
 
 router = APIRouter()
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
@@ -480,6 +480,33 @@ def retry_recording_analysis(
     db.refresh(recording)
 
     enqueue_pipeline(recording.id)
+    db.refresh(recording)
+    return recording
+
+
+@router.post("/{recording_id}/summary/regenerate", response_model=RecordingOut)
+def regenerate_summary(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> RecordingOut:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    if recording.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be retried")
+    if recording.status in _IN_PROGRESS_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
+
+    transcript_exists = db.query(Transcript.id).filter(Transcript.recording_id == recording_id).first() is not None
+    if not transcript_exists:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Transcript not ready")
+
+    recording.status = "summarizing"
+    recording.progress = 70
+    recording.error_message = None
+    db.commit()
+    db.refresh(recording)
+
+    enqueue_summary_refresh(recording.id)
     db.refresh(recording)
     return recording
 

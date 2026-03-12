@@ -99,6 +99,14 @@ def test_recording_smoke_flow() -> None:
     assert summary.status_code == 200
     assert "summary_md" in summary.json()
 
+    regenerate_summary = client.post(f"/recordings/{recording_id}/summary/regenerate", headers=headers)
+    assert regenerate_summary.status_code == 200
+    assert regenerate_summary.json()["status"] in {"summarizing", "ready"}
+
+    summary_after_regenerate = client.get(f"/recordings/{recording_id}/summary", headers=headers)
+    assert summary_after_regenerate.status_code == 200
+    assert "summary_md" in summary_after_regenerate.json()
+
     qa = client.post(
         f"/recordings/{recording_id}/qa",
         headers=headers,

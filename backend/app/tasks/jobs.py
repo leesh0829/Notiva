@@ -22,6 +22,13 @@ def enqueue_pipeline(recording_id: str) -> None:
         return
 
 
+def enqueue_summary_refresh(recording_id: str) -> None:
+    try:
+        regenerate_summary_task.apply_async(args=[recording_id])
+    except Exception:
+        return
+
+
 def _update_status(recording: Recording, status: RecordingStatus, progress: int, message: str | None = None) -> None:
     recording.status = status.value
     recording.progress = progress
@@ -121,6 +128,37 @@ def embed_index_task(recording_id: str) -> str:
             raise ValueError("Recording not found")
 
         build_chunk_index(db, recording_id)
+        _update_status(recording, RecordingStatus.READY, 100)
+        db.commit()
+        return recording_id
+    except Exception as exc:
+        db.rollback()
+        recording = db.query(Recording).filter(Recording.id == recording_id).first()
+        if recording:
+            _update_status(recording, RecordingStatus.FAILED, recording.progress, str(exc)[:500])
+            db.commit()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.jobs.regenerate_summary_task")
+def regenerate_summary_task(recording_id: str) -> str:
+    db = SessionLocal()
+    try:
+        recording = db.query(Recording).filter(Recording.id == recording_id).first()
+        if not recording:
+            raise ValueError("Recording not found")
+
+        transcript_exists = db.query(Transcript.id).filter(Transcript.recording_id == recording_id).first() is not None
+        if not transcript_exists:
+            raise ValueError("Transcript not found")
+
+        _update_status(recording, RecordingStatus.SUMMARIZING, 70)
+        db.commit()
+
+        run_summary(db, recording_id)
+
         _update_status(recording, RecordingStatus.READY, 100)
         db.commit()
         return recording_id

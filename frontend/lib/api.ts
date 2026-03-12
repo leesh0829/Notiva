@@ -337,6 +337,12 @@ export async function retryRecordingAnalysis(id: string): Promise<Recording> {
   });
 }
 
+export async function regenerateRecordingSummary(id: string): Promise<Recording> {
+  return request<Recording>(`/recordings/${id}/summary/regenerate`, {
+    method: "POST",
+  });
+}
+
 export async function purgeRecording(id: string): Promise<void> {
   await request<unknown>(`/recordings/${id}/purge`, {
     method: "DELETE",
