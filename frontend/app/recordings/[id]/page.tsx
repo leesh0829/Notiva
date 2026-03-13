@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Download, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react";
 
 import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
+import { ExpandableMarkdownCard } from "@/components/expandable-markdown-card";
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { ProgressPill } from "@/components/progress-pill";
 import { Button } from "@/components/ui/button";
@@ -698,10 +699,7 @@ export default function RecordingDetailPage({ params }: Props) {
                     </div>
                   ) : null}
                   {summarySections.detailed ? (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="mb-3 text-xs font-semibold text-slate-500">상세 요약</p>
-                      <MarkdownPreview markdown={summarySections.detailed} className="space-y-3 text-base leading-8" />
-                    </div>
+                    <ExpandableMarkdownCard title="상세 요약" markdown={summarySections.detailed} />
                   ) : null}
                 </div>
               ) : (
