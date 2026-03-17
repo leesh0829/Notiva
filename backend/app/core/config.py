@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     qa_history_turns: int = 3
     qa_history_chars_per_turn: int = 280
     summary_map_chunk_chars: int = 1800
-    summary_map_max_chunks: int = 12
+    summary_map_max_chunks: int = 60
     trash_retention_days: int = 7
 
     token_budget_total: int = 2_000_000

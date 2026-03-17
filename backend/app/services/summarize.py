@@ -12,8 +12,11 @@ from app.db.models import Summary, Transcript
 from app.services.chunking import chunk_transcript_segments
 from app.services.openai_client import get_openai_client
 
-SUMMARY_REDUCE_INPUT_MAX_CHARS = 18000
+SUMMARY_REDUCE_INPUT_MAX_CHARS = 90000
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+")
+_MARKDOWN_STRUCTURE_PATTERN = re.compile(r"(?m)^\s*(?:[-*+] |\d+\. |> |#{1,6}\s|\|)")
+COMPACT_MAP_SUMMARY_MAX_CHARS = 4500
+COMPACT_MAP_DETAIL_MAX_CHARS = 9000
 logger = logging.getLogger(__name__)
 
 
@@ -21,14 +24,38 @@ def _safe_list(value: object) -> list:
     return value if isinstance(value, list) else []
 
 
-def _safe_text(value: object, max_chars: int = 1200) -> str:
+def _trim_text(text: str, max_chars: int | None, prefer_sentence_boundary: bool = False) -> str:
+    if max_chars is None or len(text) <= max_chars:
+        return text
+
+    clipped = text[:max_chars].rstrip()
+    if not prefer_sentence_boundary:
+        return clipped
+
+    boundary_patterns = [". ", "! ", "? ", ".\n", "!\n", "?\n", "。", "！", "？", "\n"]
+    cutoff = -1
+    for pattern in boundary_patterns:
+        idx = clipped.rfind(pattern)
+        if idx > cutoff:
+            cutoff = idx + (0 if pattern == "\n" else len(pattern.rstrip()))
+    if cutoff >= max(40, int(max_chars * 0.6)):
+        return clipped[:cutoff].rstrip()
+
+    word_cutoff = clipped.rfind(" ")
+    if word_cutoff >= max(20, int(max_chars * 0.8)):
+        return clipped[:word_cutoff].rstrip()
+
+    return clipped
+
+
+def _safe_text(value: object, max_chars: int | None = 1200, prefer_sentence_boundary: bool = False) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return text[:max_chars]
+    return _trim_text(text, max_chars=max_chars, prefer_sentence_boundary=prefer_sentence_boundary)
 
 
-def _dedupe_texts(items: list[str], max_items: int, max_chars: int) -> list[str]:
+def _dedupe_texts(items: list[str], max_items: int, max_chars: int | None) -> list[str]:
     output: list[str] = []
     seen: set[str] = set()
     for raw in items:
@@ -43,7 +70,7 @@ def _dedupe_texts(items: list[str], max_items: int, max_chars: int) -> list[str]
     return output
 
 
-def _safe_string_list(value: object, max_items: int = 12, max_chars: int = 240) -> list[str]:
+def _safe_string_list(value: object, max_items: int = 12, max_chars: int | None = 240) -> list[str]:
     return _dedupe_texts([str(item) for item in _safe_list(value)], max_items=max_items, max_chars=max_chars)
 
 
@@ -54,7 +81,7 @@ def _safe_topic_summaries(value: object, max_items: int = 8) -> list[dict]:
         if not isinstance(row, dict):
             continue
         topic = _safe_text(row.get("topic"), max_chars=80)
-        summary = _safe_text(row.get("summary"), max_chars=500)
+        summary = _safe_text(row.get("summary"), max_chars=None)
         key = f"{topic.lower()}::{summary.lower()}"
         if not topic or not summary or key in seen:
             continue
@@ -112,6 +139,22 @@ def _sentences_from_text(text: str, max_items: int = 10, max_chars: int = 220) -
     return _dedupe_texts(raw_items, max_items=max_items, max_chars=max_chars)
 
 
+def _has_structured_markdown(text: str) -> bool:
+    return bool(_MARKDOWN_STRUCTURE_PATTERN.search((text or "").strip()))
+
+
+def _group_sentences(items: list[str], group_size: int, max_groups: int) -> list[str]:
+    grouped: list[str] = []
+    for index in range(0, len(items), group_size):
+        group = " ".join(items[index : index + group_size]).strip()
+        if not group:
+            continue
+        grouped.append(group)
+        if len(grouped) >= max_groups:
+            break
+    return grouped
+
+
 def _parse_json(content: str) -> dict:
     try:
         return json.loads(content)
@@ -138,8 +181,8 @@ def _truncate_middle(text: str, max_chars: int) -> str:
 def _structured_summary_payload(parsed: dict) -> dict:
     return {
         "one_liner": _safe_text(parsed.get("one_liner"), max_chars=220),
-        "overview": _safe_text(parsed.get("overview"), max_chars=1000),
-        "detailed_summary": _safe_text(parsed.get("detailed_summary"), max_chars=2800),
+        "overview": _safe_text(parsed.get("overview"), max_chars=None, prefer_sentence_boundary=True),
+        "detailed_summary": _safe_text(parsed.get("detailed_summary"), max_chars=None, prefer_sentence_boundary=True),
         "key_points": _safe_string_list(parsed.get("key_points"), max_items=12, max_chars=220),
         "topic_summaries": _safe_topic_summaries(parsed.get("topic_summaries"), max_items=10),
         "decisions": _safe_string_list(parsed.get("decisions"), max_items=12, max_chars=220),
@@ -155,20 +198,20 @@ def _build_summary_markdown(payload: dict) -> str:
     lines: list[str] = []
 
     one_liner = _safe_text(payload.get("one_liner"), max_chars=220)
-    overview = _safe_text(payload.get("overview"), max_chars=1000)
-    detailed_summary = _safe_text(payload.get("detailed_summary"), max_chars=2800)
     key_points = _safe_string_list(payload.get("key_points"), max_items=12, max_chars=220)
     topic_summaries = _safe_topic_summaries(payload.get("topic_summaries"), max_items=10)
     decisions = _safe_string_list(payload.get("decisions"), max_items=12, max_chars=220)
     open_questions = _safe_string_list(payload.get("open_questions"), max_items=12, max_chars=220)
     notable_details = _safe_string_list(payload.get("notable_details"), max_items=14, max_chars=240)
+    overview_markdown = _render_overview_markdown(payload)
+    detailed_markdown = _render_detailed_markdown(payload)
 
     if one_liner:
         lines.extend(["## 한 줄 요약", one_liner, ""])
-    if overview:
-        lines.extend(["## 총 요약", overview, ""])
-    if detailed_summary:
-        lines.extend(["## 상세 요약", detailed_summary, ""])
+    if overview_markdown:
+        lines.extend(["## 총 요약", overview_markdown, ""])
+    if detailed_markdown:
+        lines.extend(["## 상세 요약", detailed_markdown, ""])
     if key_points:
         lines.append("## 핵심 포인트")
         lines.extend([f"- {item}" for item in key_points])
@@ -195,6 +238,103 @@ def _build_summary_markdown(payload: dict) -> str:
     return markdown or "요약을 생성하지 못했습니다."
 
 
+def _render_overview_markdown(payload: dict) -> str:
+    overview = _safe_text(payload.get("overview"), max_chars=None, prefer_sentence_boundary=True)
+    key_points = _safe_string_list(payload.get("key_points"), max_items=12, max_chars=220)
+    topic_summaries = _safe_topic_summaries(payload.get("topic_summaries"), max_items=10)
+    decisions = _safe_string_list(payload.get("decisions"), max_items=12, max_chars=220)
+    action_items = _safe_action_items(payload.get("action_items"), max_items=12)
+
+    if _has_structured_markdown(overview):
+        return overview
+
+    overview_items = _sentences_from_text(overview, max_items=5, max_chars=320)
+    if not overview_items:
+        overview_items = key_points[:5]
+    if not overview_items and topic_summaries:
+        overview_items = [f"{item['topic']}: {item['summary']}" for item in topic_summaries[:4]]
+
+    lines: list[str] = []
+    if overview_items:
+        lines.extend([f"- {item}" for item in overview_items])
+    if decisions:
+        if lines:
+            lines.append("")
+        lines.append("### 결정/합의")
+        lines.extend([f"- {item}" for item in decisions[:4]])
+    if action_items:
+        if lines:
+            lines.append("")
+        lines.append("### 후속 조치")
+        lines.extend(
+            [
+                f"- {item['task']} (담당: {item['owner'] or '미지정'}, 기한: {item['due'] or '미정'})"
+                for item in action_items[:4]
+            ]
+        )
+
+    if not lines and overview:
+        return overview
+    return "\n".join(lines).strip()
+
+
+def _render_detailed_markdown(payload: dict) -> str:
+    detailed_summary = _safe_text(payload.get("detailed_summary"), max_chars=None, prefer_sentence_boundary=True)
+    topic_summaries = _safe_topic_summaries(payload.get("topic_summaries"), max_items=10)
+    decisions = _safe_string_list(payload.get("decisions"), max_items=12, max_chars=220)
+    open_questions = _safe_string_list(payload.get("open_questions"), max_items=12, max_chars=220)
+    notable_details = _safe_string_list(payload.get("notable_details"), max_items=14, max_chars=240)
+    action_items = _safe_action_items(payload.get("action_items"), max_items=12)
+
+    if _has_structured_markdown(detailed_summary):
+        return detailed_summary
+
+    detail_points = _group_sentences(
+        _sentences_from_text(detailed_summary, max_items=14, max_chars=320),
+        group_size=2,
+        max_groups=7,
+    )
+
+    lines: list[str] = []
+    if detail_points:
+        lines.append("### 내용 정리")
+        lines.extend([f"- {item}" for item in detail_points])
+    if topic_summaries:
+        if lines:
+            lines.append("")
+        lines.append("### 주제별 세부 내용")
+        lines.extend([f"- **{item['topic']}**: {item['summary']}" for item in topic_summaries])
+    if decisions:
+        if lines:
+            lines.append("")
+        lines.append("### 결정/합의")
+        lines.extend([f"- {item}" for item in decisions])
+    if open_questions:
+        if lines:
+            lines.append("")
+        lines.append("### 남은 질문")
+        lines.extend([f"- {item}" for item in open_questions])
+    if notable_details:
+        if lines:
+            lines.append("")
+        lines.append("### 보충 메모")
+        lines.extend([f"- {item}" for item in notable_details])
+    if action_items:
+        if lines:
+            lines.append("")
+        lines.append("### 실행 항목")
+        lines.extend(
+            [
+                f"- {item['task']} (담당: {item['owner'] or '미지정'}, 기한: {item['due'] or '미정'})"
+                for item in action_items
+            ]
+        )
+
+    if not lines and detailed_summary:
+        return detailed_summary
+    return "\n".join(lines).strip()
+
+
 def _has_meaningful_payload(payload: dict) -> bool:
     return any(
         [
@@ -217,8 +357,8 @@ def _payload_from_text(text: str, timeline: list[dict] | None = None) -> dict:
     sentences = _sentences_from_text(text, max_items=12, max_chars=220)
     if not sentences:
         sentences = ["전사 내용을 바탕으로 요약을 구성하지 못했습니다."]
-    overview = " ".join(sentences[:3])[:1000]
-    detailed = " ".join(sentences[:8])[:2800]
+    overview = " ".join(sentences[:3]).strip()
+    detailed = " ".join(sentences[:8]).strip()
     return {
         "one_liner": sentences[0][:220],
         "overview": overview,
@@ -258,12 +398,12 @@ def _payload_from_mapped_items(mapped: list[dict]) -> dict:
     summaries = _dedupe_texts(
         [str(item.get("summary") or item.get("detailed_summary") or "") for item in mapped],
         max_items=10,
-        max_chars=260,
+        max_chars=None,
     )
     details = _dedupe_texts(
         [str(item.get("detailed_summary") or item.get("summary") or "") for item in mapped],
         max_items=16,
-        max_chars=320,
+        max_chars=None,
     )
     key_points = _dedupe_texts(
         [point for item in mapped for point in _safe_string_list(item.get("key_points"), max_items=8, max_chars=220)],
@@ -308,8 +448,8 @@ def _payload_from_mapped_items(mapped: list[dict]) -> dict:
         details = summaries
     return {
         "one_liner": (summaries or key_points or notable_details or ["요약 결과를 정리했습니다."])[0][:220],
-        "overview": " ".join((summaries or key_points)[:4])[:1000],
-        "detailed_summary": " ".join((details or summaries or key_points)[:10])[:2800],
+        "overview": " ".join((summaries or key_points)[:4]).strip(),
+        "detailed_summary": " ".join(details or summaries or key_points).strip(),
         "key_points": key_points or summaries[:8],
         "topic_summaries": topic_summaries or [{"topic": f"주제 {idx + 1}", "summary": item} for idx, item in enumerate(summaries[:5])],
         "decisions": decisions,
@@ -331,8 +471,8 @@ def _summary_result_from_parsed(parsed: dict) -> tuple[str, list[dict], list[str
 
 def _map_item_from_parsed(parsed: dict) -> dict:
     return {
-        "summary": _safe_text(parsed.get("summary"), max_chars=900),
-        "detailed_summary": _safe_text(parsed.get("detailed_summary"), max_chars=1400),
+        "summary": _safe_text(parsed.get("summary"), max_chars=None),
+        "detailed_summary": _safe_text(parsed.get("detailed_summary"), max_chars=None, prefer_sentence_boundary=True),
         "key_points": _safe_string_list(parsed.get("key_points"), max_items=8, max_chars=180),
         "topic_summaries": _safe_topic_summaries(parsed.get("topic_summaries"), max_items=6),
         "decisions": _safe_string_list(parsed.get("decisions"), max_items=6, max_chars=180),
@@ -345,13 +485,17 @@ def _map_item_from_parsed(parsed: dict) -> dict:
 
 
 def _compact_map_item(item: dict) -> dict:
-    summary = _safe_text(item.get("summary"), max_chars=900)
+    summary = _safe_text(item.get("summary"), max_chars=COMPACT_MAP_SUMMARY_MAX_CHARS)
     topic_summaries = _safe_topic_summaries(item.get("topic_summaries"), max_items=6)
     if not topic_summaries and summary:
         topic_summaries = [{"topic": "청크 요약", "summary": summary[:400]}]
     return {
         "summary": summary,
-        "detailed_summary": _safe_text(item.get("detailed_summary"), max_chars=1400),
+        "detailed_summary": _safe_text(
+            item.get("detailed_summary"),
+            max_chars=COMPACT_MAP_DETAIL_MAX_CHARS,
+            prefer_sentence_boundary=True,
+        ),
         "key_points": _safe_string_list(item.get("key_points"), max_items=8, max_chars=180),
         "topic_summaries": topic_summaries,
         "decisions": _safe_string_list(item.get("decisions"), max_items=6, max_chars=180),
@@ -418,7 +562,7 @@ def _safe_chat_json(client, prompt: str, user_text: str) -> dict:
 
 def _fallback_summary(transcript: Transcript) -> tuple[str, list[dict], list[str], list[dict], str]:
     timeline = [{"time_ms": segment["start_ms"], "text": segment["text"]} for segment in transcript.segments[:8]]
-    payload = _payload_from_text(transcript.full_text[:5000], timeline=timeline)
+    payload = _payload_from_text(transcript.full_text[:25000], timeline=timeline)
     summary_md = _build_summary_markdown(payload)
     return summary_md, payload["action_items"], payload["keywords"], payload["timeline"], "fallback-summary-v3"
 
@@ -428,6 +572,12 @@ def _one_pass_summary(client, transcript_text: str) -> tuple[str, list[dict], li
         "You are a meeting/class note assistant.\n"
         "Preserve as much important content as possible. Do not over-compress. "
         "If there are multiple agenda items, keep them separate instead of merging them.\n"
+        "Focus on substantive content, not the fact that somebody spoke.\n"
+        "For classes, summarize what was taught: concepts, definitions, examples, comparisons, formulas, cautions, and conclusions.\n"
+        "For meetings, summarize what was decided: options, rationale, blockers, owners, deadlines, and next steps.\n"
+        "Avoid generic narration such as '이번 강의는 ... 설명했다', '교수님은 ... 강조했다', '회의에서는 ... 논의했다' unless the speaker identity itself matters.\n"
+        "Write overview and detailed_summary in Markdown. Prefer bullets and short subsection headings when helpful.\n"
+        "Write a thorough detailed_summary when the source is long. Do not stop any field mid-sentence.\n"
         "Return JSON only with keys:\n"
         "one_liner, overview, detailed_summary, key_points, topic_summaries, "
         "decisions, open_questions, notable_details, action_items, keywords, timeline.\n"
@@ -455,13 +605,18 @@ def _map_reduce_summary(transcript: Transcript, client) -> tuple[str, list[dict]
         overlap_chars=min(220, max(80, settings.summary_map_chunk_chars // 8)),
     )[: settings.summary_map_max_chunks]
     if not chunks:
-        return _one_pass_summary(client, transcript.full_text[:4000])
+        return _one_pass_summary(client, transcript.full_text[:20000])
     if len(chunks) == 1:
         return _one_pass_summary(client, chunks[0]["text"])
 
     map_prompt = (
         "You summarize one transcript chunk from a meeting/class.\n"
         "Preserve concrete details. Better slightly verbose than overly compressed.\n"
+        "Focus on substantive content rather than saying that someone explained or discussed something.\n"
+        "For classes, capture what the instructor actually taught. For meetings, capture what participants actually decided or planned.\n"
+        "Avoid generic narration such as '이번 강의에서는', '교수님은', '회의에서는', '설명했다', '논의했다' unless attribution is essential.\n"
+        "Write summary and detailed_summary in Markdown. Prefer bullets and short subsection headings when helpful.\n"
+        "Write a detailed_summary that keeps important specifics from the chunk and ends on a complete sentence.\n"
         "Return JSON keys only: summary, detailed_summary, key_points, topic_summaries, "
         "decisions, open_questions, notable_details, action_items, keywords, timeline.\n"
         "topic_summaries: array of {topic, summary}. "
@@ -484,6 +639,10 @@ def _map_reduce_summary(transcript: Transcript, client) -> tuple[str, list[dict]
     reduce_prompt = (
         "Merge chunk summaries into a rich final summary.\n"
         "Preserve most major details from the chunks instead of compressing them into a short abstract.\n"
+        "Focus on the actual taught/discussed/decided content, not on describing that a lecture or meeting happened.\n"
+        "Avoid generic narration such as '이번 강의는', '교수님은 ... 설명했다', '회의에서는 ... 논의했다' unless attribution is essential.\n"
+        "Write overview and detailed_summary in Markdown. Prefer bullets and short subsection headings when helpful.\n"
+        "Make detailed_summary thorough when the transcript is long, and do not end mid-sentence.\n"
         "Return JSON only with keys: one_liner, overview, detailed_summary, key_points, "
         "topic_summaries, decisions, open_questions, notable_details, action_items, keywords, timeline.\n"
         "topic_summaries: array of {topic, summary}. "

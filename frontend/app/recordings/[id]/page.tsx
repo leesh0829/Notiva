@@ -92,6 +92,8 @@ const EMPTY_SUMMARY_SECTIONS: SummarySections = {
   notableDetails: "",
 };
 
+const SUMMARY_SENTENCE_BREAK_PATTERN = /(?<=[.!?。！？]\s|[.!?。！？])(?=\s|$)/;
+
 function parseSummarySections(markdown: string): SummarySections {
   const lines = (markdown || "").replace(/\r/g, "").split("\n");
   const sections: SummarySections = { ...EMPTY_SUMMARY_SECTIONS };
@@ -133,6 +135,37 @@ function parseSummarySections(markdown: string): SummarySections {
     sections[key] = buffers[key].join("\n").trim();
   });
   return sections;
+}
+
+function hasStructuredMarkdown(text: string): boolean {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .some((line) => /^(\s*[-*+] |\s*\d+\. |\s*>|\s*#{1,6}\s|\s*\|)/.test(line.trim()));
+}
+
+function formatReadableSummaryMarkdown(text: string, sentencesPerParagraph: number): string {
+  const raw = (text || "").replace(/\r/g, "").trim();
+  if (!raw) return raw;
+  if (raw.includes("\n\n") || hasStructuredMarkdown(raw)) {
+    return raw;
+  }
+
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  const sentences = normalized
+    .split(SUMMARY_SENTENCE_BREAK_PATTERN)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  if (sentences.length <= sentencesPerParagraph) {
+    return raw;
+  }
+
+  const paragraphs: string[] = [];
+  for (let index = 0; index < sentences.length; index += sentencesPerParagraph) {
+    paragraphs.push(sentences.slice(index, index + sentencesPerParagraph).join(" "));
+  }
+  return paragraphs.join("\n\n");
 }
 
 function exportTextContent(recording: Recording | null, summary: SummaryResponse | null): string {
@@ -278,8 +311,10 @@ export default function RecordingDetailPage({ params }: Props) {
   const [deletingAudio, setDeletingAudio] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
+  const [refreshSeed, setRefreshSeed] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioLoadingRef = useRef(false);
+  const ownedAudioUrlRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -296,12 +331,20 @@ export default function RecordingDetailPage({ params }: Props) {
   }, [hydrated, router]);
 
   useEffect(() => {
+    return () => {
+      if (ownedAudioUrlRef.current) {
+        URL.revokeObjectURL(ownedAudioUrlRef.current);
+        ownedAudioUrlRef.current = null;
+      }
+    };
+  }, [params.id]);
+
+  useEffect(() => {
     if (!authReady) return;
     setAudioLoadDone(false);
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
-    let localAudioUrl: string | null = null;
 
     async function load() {
       try {
@@ -309,14 +352,19 @@ export default function RecordingDetailPage({ params }: Props) {
         if (cancelled) return;
         setRecording(meta);
         setNoteMd(meta.note_md ?? "");
+        setError(null);
 
-        if (!localAudioUrl && !audioLoadingRef.current) {
+        if (!ownedAudioUrlRef.current && !audioLoadingRef.current) {
           audioLoadingRef.current = true;
           void getRecordingAudioBlob(params.id)
             .then((audioBlob) => {
               if (cancelled) return;
-              localAudioUrl = URL.createObjectURL(audioBlob);
-              setAudioUrl(localAudioUrl);
+              const nextAudioUrl = URL.createObjectURL(audioBlob);
+              if (ownedAudioUrlRef.current) {
+                URL.revokeObjectURL(ownedAudioUrlRef.current);
+              }
+              ownedAudioUrlRef.current = nextAudioUrl;
+              setAudioUrl(nextAudioUrl);
               setAudioLoadDone(true);
             })
             .catch(() => {
@@ -329,16 +377,27 @@ export default function RecordingDetailPage({ params }: Props) {
         }
 
         if (meta.status === "ready") {
-          const [nextSummary, nextTranscript, history] = await Promise.all([
-            getSummary(params.id),
-            getTranscript(params.id),
-            getQaMessages(params.id),
-          ]);
-          if (cancelled) return;
-          setSummary(nextSummary);
-          setTranscript(nextTranscript);
-          setQaTurns(history.items);
-          return;
+          try {
+            const [nextSummary, nextTranscript, history] = await Promise.all([
+              getSummary(params.id),
+              getTranscript(params.id),
+              getQaMessages(params.id),
+            ]);
+            if (cancelled) return;
+            setSummary(nextSummary);
+            setTranscript(nextTranscript);
+            setQaTurns(history.items);
+            setError(null);
+            return;
+          } catch (readyErr) {
+            if (isAuthRequiredError(readyErr)) {
+              router.replace("/login");
+              return;
+            }
+            if (cancelled) return;
+            timer = setTimeout(load, 1500);
+            return;
+          }
         }
 
         timer = setTimeout(load, 2500);
@@ -357,11 +416,8 @@ export default function RecordingDetailPage({ params }: Props) {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      if (localAudioUrl) {
-        URL.revokeObjectURL(localAudioUrl);
-      }
     };
-  }, [authReady, params.id, router]);
+  }, [authReady, params.id, refreshSeed, router]);
 
   const canAsk = useMemo(() => recording?.status === "ready", [recording?.status]);
   const retryDisabled = useMemo(() => {
@@ -390,6 +446,14 @@ export default function RecordingDetailPage({ params }: Props) {
   const summarySections = useMemo(
     () => parseSummarySections(summary?.summary_md ?? ""),
     [summary?.summary_md],
+  );
+  const formattedOverview = useMemo(
+    () => formatReadableSummaryMarkdown(summarySections.overview, 2),
+    [summarySections.overview],
+  );
+  const formattedDetailed = useMemo(
+    () => formatReadableSummaryMarkdown(summarySections.detailed, 2),
+    [summarySections.detailed],
   );
 
   useEffect(() => {
@@ -474,6 +538,7 @@ export default function RecordingDetailPage({ params }: Props) {
       setQaTurns([]);
       setTab("summary");
       setMenuOpen(false);
+      setRefreshSeed((current) => current + 1);
     } catch (err) {
       if (isAuthRequiredError(err)) {
         router.replace("/login");
@@ -495,6 +560,7 @@ export default function RecordingDetailPage({ params }: Props) {
       setSummary(null);
       setTab("summary");
       setMenuOpen(false);
+      setRefreshSeed((current) => current + 1);
     } catch (err) {
       if (isAuthRequiredError(err)) {
         router.replace("/login");
@@ -523,6 +589,7 @@ export default function RecordingDetailPage({ params }: Props) {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
+        ownedAudioUrlRef.current = null;
         return null;
       });
       setAudioLoadDone(true);
@@ -693,13 +760,31 @@ export default function RecordingDetailPage({ params }: Props) {
               {summarySections.overview || summarySections.detailed ? (
                 <div className="grid gap-4 lg:grid-cols-2">
                   {summarySections.overview ? (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="mb-3 text-xs font-semibold text-slate-500">총 요약</p>
-                      <MarkdownPreview markdown={summarySections.overview} className="space-y-3 text-base leading-8" />
+                    <div className="relative overflow-hidden rounded-[28px] border border-amber-200/80 bg-[linear-gradient(145deg,rgba(255,251,235,0.98),rgba(255,247,237,0.92))] p-6 shadow-[0_24px_60px_-38px_rgba(180,83,9,0.38)]">
+                      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[radial-gradient(circle_at_top_left,rgba(251,191,36,0.18),transparent_60%)]" />
+                      <div className="relative">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600/80">Overview</p>
+                            <p className="mt-1 text-sm font-semibold text-amber-950">총 요약</p>
+                          </div>
+                          <span className="rounded-full border border-amber-200 bg-white/75 px-3 py-1 text-[11px] font-medium text-amber-700">
+                            핵심 흐름
+                          </span>
+                        </div>
+                        <div className="mt-5 border-t border-amber-200/70 pt-4">
+                          <MarkdownPreview markdown={formattedOverview} className="space-y-4 text-[15px] leading-8 text-slate-700" />
+                        </div>
+                      </div>
                     </div>
                   ) : null}
                   {summarySections.detailed ? (
-                    <ExpandableMarkdownCard title="상세 요약" markdown={summarySections.detailed} />
+                    <ExpandableMarkdownCard
+                      title="상세 요약"
+                      markdown={formattedDetailed}
+                      collapsedHeight={560}
+                      className="border-sky-200/80 bg-white shadow-[0_24px_60px_-38px_rgba(14,116,144,0.42)]"
+                    />
                   ) : null}
                 </div>
               ) : (

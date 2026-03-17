@@ -19,7 +19,7 @@ export function ExpandableMarkdownCard({
   title,
   markdown,
   className,
-  collapsedHeight = 420,
+  collapsedHeight = 520,
 }: ExpandableMarkdownCardProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -73,10 +73,18 @@ export function ExpandableMarkdownCard({
 
   return (
     <>
-      <div className={cn("rounded-xl border border-slate-200 bg-slate-50 p-4", className)}>
+      <div
+        className={cn(
+          "rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_24px_60px_-38px_rgba(15,23,42,0.38)]",
+          className,
+        )}
+      >
         <div className="mb-3 flex items-center justify-between gap-3">
-          <p className="text-xs font-semibold text-slate-500">{title}</p>
-          {hasOverflow ? <span className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-500">긴 요약</span> : null}
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Deep Summary</p>
+            <p className="mt-1 text-sm font-semibold text-slate-700">{title}</p>
+          </div>
+          {hasOverflow ? <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-500">긴 요약</span> : null}
         </div>
 
         <div className="relative">
@@ -90,12 +98,12 @@ export function ExpandableMarkdownCard({
           </div>
 
           {!expanded && hasOverflow ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-white via-white/95 to-transparent" />
           ) : null}
         </div>
 
         {hasOverflow ? (
-          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3">
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-4">
             <Button type="button" variant="outline" size="sm" onClick={() => setExpanded((value) => !value)}>
               {expanded ? <Minimize2 className="mr-2 h-4 w-4" /> : <Maximize2 className="mr-2 h-4 w-4" />}
               {expanded ? "접기" : "펼치기"}
