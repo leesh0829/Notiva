@@ -242,8 +242,6 @@ def _render_overview_markdown(payload: dict) -> str:
     overview = _safe_text(payload.get("overview"), max_chars=None, prefer_sentence_boundary=True)
     key_points = _safe_string_list(payload.get("key_points"), max_items=12, max_chars=220)
     topic_summaries = _safe_topic_summaries(payload.get("topic_summaries"), max_items=10)
-    decisions = _safe_string_list(payload.get("decisions"), max_items=12, max_chars=220)
-    action_items = _safe_action_items(payload.get("action_items"), max_items=12)
 
     if _has_structured_markdown(overview):
         return overview
@@ -257,21 +255,6 @@ def _render_overview_markdown(payload: dict) -> str:
     lines: list[str] = []
     if overview_items:
         lines.extend([f"- {item}" for item in overview_items])
-    if decisions:
-        if lines:
-            lines.append("")
-        lines.append("### 결정/합의")
-        lines.extend([f"- {item}" for item in decisions[:4]])
-    if action_items:
-        if lines:
-            lines.append("")
-        lines.append("### 후속 조치")
-        lines.extend(
-            [
-                f"- {item['task']} (담당: {item['owner'] or '미지정'}, 기한: {item['due'] or '미정'})"
-                for item in action_items[:4]
-            ]
-        )
 
     if not lines and overview:
         return overview
@@ -576,6 +559,7 @@ def _one_pass_summary(client, transcript_text: str) -> tuple[str, list[dict], li
         "For classes, summarize what was taught: concepts, definitions, examples, comparisons, formulas, cautions, and conclusions.\n"
         "For meetings, summarize what was decided: options, rationale, blockers, owners, deadlines, and next steps.\n"
         "Avoid generic narration such as '이번 강의는 ... 설명했다', '교수님은 ... 강조했다', '회의에서는 ... 논의했다' unless the speaker identity itself matters.\n"
+        "Keep overview focused on the main content only. Put decisions in decisions and follow-up work in action_items, not in overview.\n"
         "Write overview and detailed_summary in Markdown. Prefer bullets and short subsection headings when helpful.\n"
         "Write a thorough detailed_summary when the source is long. Do not stop any field mid-sentence.\n"
         "Return JSON only with keys:\n"
@@ -615,6 +599,7 @@ def _map_reduce_summary(transcript: Transcript, client) -> tuple[str, list[dict]
         "Focus on substantive content rather than saying that someone explained or discussed something.\n"
         "For classes, capture what the instructor actually taught. For meetings, capture what participants actually decided or planned.\n"
         "Avoid generic narration such as '이번 강의에서는', '교수님은', '회의에서는', '설명했다', '논의했다' unless attribution is essential.\n"
+        "Keep summary focused on content. Put decisions in decisions and follow-up work in action_items, not in summary.\n"
         "Write summary and detailed_summary in Markdown. Prefer bullets and short subsection headings when helpful.\n"
         "Write a detailed_summary that keeps important specifics from the chunk and ends on a complete sentence.\n"
         "Return JSON keys only: summary, detailed_summary, key_points, topic_summaries, "
@@ -641,6 +626,7 @@ def _map_reduce_summary(transcript: Transcript, client) -> tuple[str, list[dict]
         "Preserve most major details from the chunks instead of compressing them into a short abstract.\n"
         "Focus on the actual taught/discussed/decided content, not on describing that a lecture or meeting happened.\n"
         "Avoid generic narration such as '이번 강의는', '교수님은 ... 설명했다', '회의에서는 ... 논의했다' unless attribution is essential.\n"
+        "Keep overview focused on main content. Put decisions in decisions and follow-up work in action_items, not in overview.\n"
         "Write overview and detailed_summary in Markdown. Prefer bullets and short subsection headings when helpful.\n"
         "Make detailed_summary thorough when the transcript is long, and do not end mid-sentence.\n"
         "Return JSON only with keys: one_liner, overview, detailed_summary, key_points, "

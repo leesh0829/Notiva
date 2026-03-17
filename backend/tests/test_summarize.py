@@ -43,6 +43,27 @@ def test_build_summary_markdown_preserves_existing_markdown_in_overview_and_deta
     assert "## 상세 요약\n### 내용 정리\n- 세부 A\n- 세부 B" in markdown
 
 
+def test_build_summary_markdown_does_not_put_decisions_or_actions_in_overview() -> None:
+    markdown = _build_summary_markdown(
+        {
+            "one_liner": "짧은 요약",
+            "overview": "핵심 A. 핵심 B.",
+            "detailed_summary": "세부 A. 세부 B.",
+            "key_points": [],
+            "topic_summaries": [],
+            "decisions": ["결정 1"],
+            "open_questions": [],
+            "notable_details": [],
+            "action_items": [{"task": "후속 작업", "owner": "팀", "due": "내일"}],
+        }
+    )
+
+    overview_block = markdown.split("## 상세 요약")[0]
+    assert "### 결정/합의" not in overview_block
+    assert "### 후속 조치" not in overview_block
+    assert "## 결정 사항" in markdown
+
+
 def test_summary_result_from_parsed_preserves_action_items_keywords_and_timeline() -> None:
     summary_md, action_items, keywords, timeline = _summary_result_from_parsed(
         {
