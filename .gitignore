@@ -73,3 +73,4 @@ backend/coverage/
 
 # Tooling
 .cache/
+.codex-tmp/
