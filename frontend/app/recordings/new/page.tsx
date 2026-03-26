@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
-import { UploadRecorder } from "@/components/upload-recorder";
+import { UploadRecorder, type UploadRecorderHandle } from "@/components/upload-recorder";
 import { Button } from "@/components/ui/button";
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { createRecording, hasStoredToken, isAuthRequiredError } from "@/lib/api";
+import {
+  clearNewRecordingDraft,
+  loadNewRecordingDraftMeta,
+  saveNewRecordingDraftMeta,
+} from "@/lib/new-recording-draft";
 
 type MemoTab = "write" | "view";
 
@@ -16,36 +21,133 @@ export default function NewRecordingPage() {
   const [folderName, setFolderName] = useState("");
   const [noteMd, setNoteMd] = useState("");
   const [memoTab, setMemoTab] = useState<MemoTab>("write");
-  const [file, setFile] = useState<File | null>(null);
-  const [source, setSource] = useState<"upload" | "web_record">("upload");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const router = useRouter();
+  const recorderRef = useRef<UploadRecorderHandle | null>(null);
+  const draftValuesRef = useRef({ title: "", folderName: "", noteMd: "" });
+  const lastSavedDraftValuesRef = useRef({ title: "", folderName: "", noteMd: "" });
+  const draftReadyRef = useRef(false);
 
   useEffect(() => {
     if (!hasStoredToken()) {
       router.replace("/login");
       return;
     }
+
+    const draft = loadNewRecordingDraftMeta();
+    const restoredValues = {
+      title: draft.title,
+      folderName: draft.folderName,
+      noteMd: draft.noteMd,
+    };
+
+    draftValuesRef.current = restoredValues;
+    lastSavedDraftValuesRef.current = restoredValues;
+    setTitle(restoredValues.title);
+    setFolderName(restoredValues.folderName);
+    setNoteMd(restoredValues.noteMd);
+    setDraftSavedAt(draft.lastSavedAt);
+    draftReadyRef.current = true;
     setAuthReady(true);
   }, [router]);
 
-  async function onSubmit() {
-    if (!file) {
-      setError("오디오 파일을 선택하거나 녹음해주세요.");
-      return;
+  useEffect(() => {
+    draftValuesRef.current = { title, folderName, noteMd };
+  }, [folderName, noteMd, title]);
+
+  useEffect(() => {
+    if (!authReady || !draftReadyRef.current) return;
+
+    const interval = window.setInterval(() => {
+      const current = draftValuesRef.current;
+      const lastSaved = lastSavedDraftValuesRef.current;
+      if (
+        current.title === lastSaved.title &&
+        current.folderName === lastSaved.folderName &&
+        current.noteMd === lastSaved.noteMd
+      ) {
+        return;
+      }
+
+      const savedAt = new Date().toISOString();
+      saveNewRecordingDraftMeta({
+        title: current.title,
+        folderName: current.folderName,
+        noteMd: current.noteMd,
+        lastSavedAt: savedAt,
+      });
+      lastSavedDraftValuesRef.current = current;
+      setDraftSavedAt(savedAt);
+    }, 2000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [authReady]);
+
+  useEffect(() => {
+    if (!authReady || !draftReadyRef.current) return;
+
+    function flushDraft(updateState: boolean) {
+      const current = draftValuesRef.current;
+      const lastSaved = lastSavedDraftValuesRef.current;
+      if (
+        current.title === lastSaved.title &&
+        current.folderName === lastSaved.folderName &&
+        current.noteMd === lastSaved.noteMd
+      ) {
+        return;
+      }
+
+      const savedAt = new Date().toISOString();
+      saveNewRecordingDraftMeta({
+        title: current.title,
+        folderName: current.folderName,
+        noteMd: current.noteMd,
+        lastSavedAt: savedAt,
+      });
+      lastSavedDraftValuesRef.current = current;
+      if (updateState) {
+        setDraftSavedAt(savedAt);
+      }
     }
+
+    function handlePageHide() {
+      flushDraft(false);
+    }
+
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      flushDraft(false);
+      window.removeEventListener("pagehide", handlePageHide);
+    };
+  }, [authReady]);
+
+  async function onSubmit() {
     try {
       setLoading(true);
       setError(null);
+      const prepared = await recorderRef.current?.prepareFile();
+      if (!prepared?.file || !prepared.source) {
+        setError("오디오 파일을 선택하거나 녹음해주세요.");
+        return;
+      }
+
       const created = await createRecording({
-        file,
-        source,
+        file: prepared.file,
+        source: prepared.source,
         title,
         noteMd,
         folderName: folderName.trim() || undefined,
       });
+      draftReadyRef.current = false;
+      draftValuesRef.current = { title: "", folderName: "", noteMd: "" };
+      lastSavedDraftValuesRef.current = { title: "", folderName: "", noteMd: "" };
+      setDraftSavedAt(null);
+      await clearNewRecordingDraft().catch(() => undefined);
       router.push(`/recordings/${created.id}`);
     } catch (err) {
       if (isAuthRequiredError(err)) {
@@ -98,19 +200,8 @@ export default function NewRecordingPage() {
         </div>
 
         <div className="mt-5">
-          <UploadRecorder
-            onFileReady={(selected, selectedSource) => {
-              setFile(selected);
-              setSource(selectedSource);
-            }}
-          />
+          <UploadRecorder ref={recorderRef} />
         </div>
-
-        {file ? (
-          <p className="mt-3 text-sm text-slate-600">
-            선택 파일: {file.name} ({Math.round(file.size / 1024)} KB)
-          </p>
-        ) : null}
 
         {error ? <p className="mt-3 text-sm text-rose-600">{error}</p> : null}
 
@@ -141,7 +232,10 @@ export default function NewRecordingPage() {
             </button>
           </div>
         </div>
-        <p className="mt-1 text-xs text-slate-500">녹음 중 핵심 메모를 마크다운으로 남길 수 있습니다.</p>
+        <p className="mt-1 text-xs text-slate-500">
+          녹음 중 핵심 메모를 마크다운으로 남길 수 있습니다. 메모는 2초마다 임시 저장됩니다.
+          {draftSavedAt ? ` 마지막 저장 ${new Date(draftSavedAt).toLocaleTimeString("ko-KR")}` : ""}
+        </p>
 
         <div className="mt-4 rounded-xl border border-slate-200 p-4">
           {memoTab === "write" ? (
