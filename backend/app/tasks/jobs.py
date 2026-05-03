@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from celery import chain
 
 from app.db.models import Recording, RecordingStatus, Summary, Transcript, TranscriptChunk
 from app.db.session import SessionLocal
 from app.services.embedding import build_chunk_index
+from app.services.openai_errors import sanitize_provider_error_message
 from app.services.stt import run_transcription
 from app.services.summarize import run_summary
 from app.tasks.celery_app import celery_app
@@ -33,6 +34,11 @@ def _update_status(recording: Recording, status: RecordingStatus, progress: int,
     recording.status = status.value
     recording.progress = progress
     recording.error_message = message
+
+
+def _failure_message(exc: Exception) -> str:
+    raw_message = str(exc).strip()[:500] or "Analysis failed"
+    return sanitize_provider_error_message(raw_message) or raw_message
 
 
 def _is_already_completed(db, recording_id: str) -> bool:
@@ -81,7 +87,7 @@ def transcribe_task(recording_id: str) -> str:
         db.rollback()
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if recording:
-            _update_status(recording, RecordingStatus.FAILED, recording.progress, str(exc)[:500])
+            _update_status(recording, RecordingStatus.FAILED, recording.progress, _failure_message(exc))
             db.commit()
         raise
     finally:
@@ -110,7 +116,7 @@ def summarize_task(recording_id: str) -> str:
         db.rollback()
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if recording:
-            _update_status(recording, RecordingStatus.FAILED, recording.progress, str(exc)[:500])
+            _update_status(recording, RecordingStatus.FAILED, recording.progress, _failure_message(exc))
             db.commit()
         raise
     finally:
@@ -135,7 +141,7 @@ def embed_index_task(recording_id: str) -> str:
         db.rollback()
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if recording:
-            _update_status(recording, RecordingStatus.FAILED, recording.progress, str(exc)[:500])
+            _update_status(recording, RecordingStatus.FAILED, recording.progress, _failure_message(exc))
             db.commit()
         raise
     finally:
@@ -166,7 +172,7 @@ def regenerate_summary_task(recording_id: str) -> str:
         db.rollback()
         recording = db.query(Recording).filter(Recording.id == recording_id).first()
         if recording:
-            _update_status(recording, RecordingStatus.FAILED, recording.progress, str(exc)[:500])
+            _update_status(recording, RecordingStatus.FAILED, recording.progress, _failure_message(exc))
             db.commit()
         raise
     finally:

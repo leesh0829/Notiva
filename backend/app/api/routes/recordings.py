@@ -33,6 +33,7 @@ from app.schemas.recording import (
     TranscriptOut,
     TranscriptSegmentsUpdateRequest,
 )
+from app.services.openai_errors import sanitize_provider_error_message
 from app.services.rag import answer_question
 from app.services.storage import delete_object, read_object_bytes, upload_to_s3
 from app.tasks.jobs import enqueue_pipeline, enqueue_summary_refresh
@@ -458,7 +459,8 @@ def get_recording(
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> RecordingDetailOut:
-    return _get_owned_recording(db, recording_id, user_id)
+    detail = RecordingDetailOut.model_validate(_get_owned_recording(db, recording_id, user_id))
+    return detail.model_copy(update={"error_message": sanitize_provider_error_message(detail.error_message)})
 
 
 @router.post("/{recording_id}/retry", response_model=RecordingOut)

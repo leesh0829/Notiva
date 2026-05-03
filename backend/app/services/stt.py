@@ -9,6 +9,7 @@ from openai import BadRequestError
 
 from app.core.config import settings
 from app.services.openai_client import get_openai_client
+from app.services.openai_errors import is_insufficient_quota_error, quota_transcript_notice
 from app.services.storage import read_object_bytes
 
 MAX_STT_FILE_BYTES = 24 * 1024 * 1024
@@ -27,6 +28,11 @@ def _placeholder_transcription() -> tuple[str, list[dict], str]:
         {"start_ms": 86000, "end_ms": 128000, "text": "다음 주 데모 전까지 API 통합 테스트를 완료하기로 결정했습니다."},
     ]
     return " ".join(segment["text"] for segment in segments), segments, "ko"
+
+
+def _quota_fallback_transcription() -> tuple[str, list[dict], str]:
+    text = quota_transcript_notice()
+    return text, [{"start_ms": 0, "end_ms": 0, "text": text}], "ko"
 
 
 def _guess_mime(suffix: str) -> str:
@@ -442,19 +448,24 @@ def run_transcription(bucket: str, key: str) -> tuple[str, list[dict], str]:
     duration_ms = _probe_duration_ms(payload, suffix)
     prompt = _transcription_prompt()
 
-    # Provider-side file-size restrictions apply to direct uploads.
-    if _should_chunk_audio(payload, duration_ms):
-        text, segments, language = _transcribe_large_audio(client, payload, suffix)
-    else:
-        # Use bytes upload to avoid Windows temp-file lock issues.
-        try:
-            result = _transcribe_once(client, payload, filename, mime, prompt=prompt)
-        except BadRequestError as exc:
-            if not _is_invalid_audio_error(exc):
-                raise
+    try:
+        # Provider-side file-size restrictions apply to direct uploads.
+        if _should_chunk_audio(payload, duration_ms):
             text, segments, language = _transcribe_large_audio(client, payload, suffix)
         else:
-            text, language, segments = _extract_text_language_segments(result)
+            # Use bytes upload to avoid Windows temp-file lock issues.
+            try:
+                result = _transcribe_once(client, payload, filename, mime, prompt=prompt)
+            except BadRequestError as exc:
+                if not _is_invalid_audio_error(exc):
+                    raise
+                text, segments, language = _transcribe_large_audio(client, payload, suffix)
+            else:
+                text, language, segments = _extract_text_language_segments(result)
+    except Exception as exc:
+        if not is_insufficient_quota_error(exc):
+            raise
+        return _quota_fallback_transcription()
 
     if not text and segments:
         text = " ".join(item["text"] for item in segments)

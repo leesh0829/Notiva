@@ -520,6 +520,17 @@ export async function buildNewRecordingDraftUpload(): Promise<{
       return { file: null, source: "web_record" };
     }
 
+    if (records.length === 1) {
+      const record = records[0];
+      const extension = guessExtensionFromMimeType(record.mimeType);
+      return {
+        file: new File([record.blob], `web-record-${Date.now()}.${extension}`, {
+          type: record.mimeType || "audio/webm",
+        }),
+        source: "web_record",
+      };
+    }
+
     return {
       file: await mergeDraftRecordingSegments(records),
       source: "web_record",

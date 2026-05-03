@@ -22,6 +22,10 @@ const DEV_TOKEN = process.env.NEXT_PUBLIC_DEV_JWT ?? "";
 const ENABLE_DEV_AUTO_AUTH = process.env.NEXT_PUBLIC_ENABLE_DEV_AUTH === "true";
 const TOKEN_STORAGE_KEY = "meeting_ai_access_token";
 const AUTH_REQUIRED_CODE = "AUTH_REQUIRED";
+const REQUEST_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS ?? "15000");
+const UPLOAD_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_UPLOAD_TIMEOUT_MS ?? "600000");
+
+type RequestOptions = { timeoutMs?: number };
 
 type AuthError = Error & { code?: string };
 
@@ -94,19 +98,59 @@ async function ensureToken(): Promise<string> {
   return payload.access_token;
 }
 
-async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+async function authedFetch(
+  path: string,
+  init: RequestInit = {},
+  options: RequestOptions = {},
+): Promise<Response> {
   const token = await ensureToken();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
-  return fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  let timedOut = false;
+
+  const forwardAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      forwardAbort();
+    } else {
+      externalSignal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const timeout = timeoutMs > 0
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs)
+    : null;
+
+  try {
+    return await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`요청 시간이 초과되었습니다. (${Math.ceil(timeoutMs / 1000)}초)`);
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", forwardAbort);
+  }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await authedFetch(path, init);
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  options: RequestOptions = {},
+): Promise<T> {
+  const response = await authedFetch(path, init, options);
   if (!response.ok) {
     if (response.status === 401) {
       clearStoredToken();
@@ -224,10 +268,14 @@ export async function createRecording(payload: {
   }
   formData.append("source", payload.source ?? "upload");
 
-  return request<Recording>("/recordings", {
-    method: "POST",
-    body: formData,
-  });
+  return request<Recording>(
+    "/recordings",
+    {
+      method: "POST",
+      body: formData,
+    },
+    { timeoutMs: UPLOAD_TIMEOUT_MS },
+  );
 }
 
 export async function getRecording(id: string): Promise<Recording> {

@@ -346,6 +346,31 @@ export default function RecordingDetailPage({ params }: Props) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
+    function loadAudio() {
+      if (ownedAudioUrlRef.current || audioLoadingRef.current) {
+        return;
+      }
+      audioLoadingRef.current = true;
+      void getRecordingAudioBlob(params.id)
+        .then((audioBlob) => {
+          if (cancelled) return;
+          const nextAudioUrl = URL.createObjectURL(audioBlob);
+          if (ownedAudioUrlRef.current) {
+            URL.revokeObjectURL(ownedAudioUrlRef.current);
+          }
+          ownedAudioUrlRef.current = nextAudioUrl;
+          setAudioUrl(nextAudioUrl);
+          setAudioLoadDone(true);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAudioLoadDone(true);
+        })
+        .finally(() => {
+          audioLoadingRef.current = false;
+        });
+    }
+
     async function load() {
       try {
         const meta = await getRecording(params.id);
@@ -353,28 +378,6 @@ export default function RecordingDetailPage({ params }: Props) {
         setRecording(meta);
         setNoteMd(meta.note_md ?? "");
         setError(null);
-
-        if (!ownedAudioUrlRef.current && !audioLoadingRef.current) {
-          audioLoadingRef.current = true;
-          void getRecordingAudioBlob(params.id)
-            .then((audioBlob) => {
-              if (cancelled) return;
-              const nextAudioUrl = URL.createObjectURL(audioBlob);
-              if (ownedAudioUrlRef.current) {
-                URL.revokeObjectURL(ownedAudioUrlRef.current);
-              }
-              ownedAudioUrlRef.current = nextAudioUrl;
-              setAudioUrl(nextAudioUrl);
-              setAudioLoadDone(true);
-            })
-            .catch(() => {
-              if (cancelled) return;
-              setAudioLoadDone(true);
-            })
-            .finally(() => {
-              audioLoadingRef.current = false;
-            });
-        }
 
         if (meta.status === "ready") {
           try {
@@ -388,6 +391,7 @@ export default function RecordingDetailPage({ params }: Props) {
             setTranscript(nextTranscript);
             setQaTurns(history.items);
             setError(null);
+            loadAudio();
             return;
           } catch (readyErr) {
             if (isAuthRequiredError(readyErr)) {
@@ -400,6 +404,7 @@ export default function RecordingDetailPage({ params }: Props) {
           }
         }
 
+        loadAudio();
         timer = setTimeout(load, 2500);
       } catch (err) {
         if (isAuthRequiredError(err)) {
