@@ -92,8 +92,6 @@ const EMPTY_SUMMARY_SECTIONS: SummarySections = {
   notableDetails: "",
 };
 
-const SUMMARY_SENTENCE_BREAK_PATTERN = /(?<=[.!?。！？]\s|[.!?。！？])(?=\s|$)/;
-
 function parseSummarySections(markdown: string): SummarySections {
   const lines = (markdown || "").replace(/\r/g, "").split("\n");
   const sections: SummarySections = { ...EMPTY_SUMMARY_SECTIONS };
@@ -135,37 +133,6 @@ function parseSummarySections(markdown: string): SummarySections {
     sections[key] = buffers[key].join("\n").trim();
   });
   return sections;
-}
-
-function hasStructuredMarkdown(text: string): boolean {
-  return text
-    .replace(/\r/g, "")
-    .split("\n")
-    .some((line) => /^(\s*[-*+] |\s*\d+\. |\s*>|\s*#{1,6}\s|\s*\|)/.test(line.trim()));
-}
-
-function formatReadableSummaryMarkdown(text: string, sentencesPerParagraph: number): string {
-  const raw = (text || "").replace(/\r/g, "").trim();
-  if (!raw) return raw;
-  if (raw.includes("\n\n") || hasStructuredMarkdown(raw)) {
-    return raw;
-  }
-
-  const normalized = raw.replace(/\s+/g, " ").trim();
-  const sentences = normalized
-    .split(SUMMARY_SENTENCE_BREAK_PATTERN)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-
-  if (sentences.length <= sentencesPerParagraph) {
-    return raw;
-  }
-
-  const paragraphs: string[] = [];
-  for (let index = 0; index < sentences.length; index += sentencesPerParagraph) {
-    paragraphs.push(sentences.slice(index, index + sentencesPerParagraph).join(" "));
-  }
-  return paragraphs.join("\n\n");
 }
 
 function exportTextContent(recording: Recording | null, summary: SummaryResponse | null): string {
@@ -452,14 +419,8 @@ export default function RecordingDetailPage({ params }: Props) {
     () => parseSummarySections(summary?.summary_md ?? ""),
     [summary?.summary_md],
   );
-  const formattedOverview = useMemo(
-    () => formatReadableSummaryMarkdown(summarySections.overview, 2),
-    [summarySections.overview],
-  );
-  const formattedDetailed = useMemo(
-    () => formatReadableSummaryMarkdown(summarySections.detailed, 2),
-    [summarySections.detailed],
-  );
+  const overviewMarkdown = summarySections.overview;
+  const detailedMarkdown = summarySections.detailed;
 
   useEffect(() => {
     if (tab === "qa") {
@@ -778,7 +739,7 @@ export default function RecordingDetailPage({ params }: Props) {
                           </span>
                         </div>
                         <div className="mt-5 border-t border-amber-200/70 pt-4">
-                          <MarkdownPreview markdown={formattedOverview} className="space-y-4 text-[15px] leading-8 text-slate-700" />
+                          <MarkdownPreview markdown={overviewMarkdown} className="space-y-4 text-[15px] leading-8 text-slate-700" />
                         </div>
                       </div>
                     </div>
@@ -786,7 +747,7 @@ export default function RecordingDetailPage({ params }: Props) {
                   {summarySections.detailed ? (
                     <ExpandableMarkdownCard
                       title="상세 요약"
-                      markdown={formattedDetailed}
+                      markdown={detailedMarkdown}
                       collapsedHeight={560}
                       className="border-sky-200/80 bg-white shadow-[0_24px_60px_-38px_rgba(14,116,144,0.42)]"
                     />
