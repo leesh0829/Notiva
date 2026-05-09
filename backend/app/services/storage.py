@@ -50,6 +50,26 @@ def upload_to_s3(upload: UploadFile) -> tuple[str, str, str]:
     return settings.s3_bucket, key, mime
 
 
+def upload_bytes_to_s3(payload: bytes, filename: str, content_type: str) -> tuple[str, str, str]:
+    suffix = Path(filename or "audio.bin").suffix
+    key = f"recordings/{uuid4()}{suffix}"
+
+    if settings.s3_enabled:
+        client = _build_s3_client()
+        client.put_object(
+            Bucket=settings.s3_bucket,
+            Key=key,
+            Body=payload,
+            ContentType=content_type,
+        )
+        return settings.s3_bucket, key, content_type
+
+    target = _local_storage_root() / settings.s3_bucket / key
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+    return settings.s3_bucket, key, content_type
+
+
 def read_object_bytes(bucket: str, key: str) -> bytes:
     if settings.s3_enabled:
         client = _build_s3_client()

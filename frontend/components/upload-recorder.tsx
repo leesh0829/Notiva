@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   buildNewRecordingDraftUpload,
   clearNewRecordingDraftAudio,
+  exportDraftAudioSegments,
   loadNewRecordingDraftAudioSnapshot,
   replaceDraftUploadFile,
   type DraftAudioSnapshot,
@@ -13,7 +14,11 @@ import {
 } from "@/lib/new-recording-draft";
 
 export interface UploadRecorderHandle {
-  prepareFile: () => Promise<{ file: File | null; source: "upload" | "web_record" | null }>;
+  prepareFile: () => Promise<{
+    file: File | null;
+    source: "upload" | "web_record" | null;
+    warnings: string[];
+  }>;
   clearDraftAudio: () => Promise<void>;
 }
 
@@ -55,6 +60,7 @@ export const UploadRecorder = forwardRef<UploadRecorderHandle>(function UploadRe
   const [paused, setPaused] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [clearing, setClearing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [audioDraft, setAudioDraft] = useState<DraftAudioSnapshot>(EMPTY_AUDIO_SNAPSHOT);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,6 +109,33 @@ export const UploadRecorder = forwardRef<UploadRecorderHandle>(function UploadRe
       setError(err instanceof Error ? err.message : "임시 녹음을 삭제하지 못했습니다.");
     } finally {
       setClearing(false);
+    }
+  }
+
+  async function downloadDraftSegments() {
+    setExporting(true);
+    setError(null);
+    try {
+      const segments = await exportDraftAudioSegments();
+      if (segments.length === 0) {
+        setError("내려받을 임시 구간이 없습니다.");
+        return;
+      }
+      for (const segment of segments) {
+        const url = URL.createObjectURL(segment.blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = segment.fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "구간 원본 다운로드에 실패했습니다.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -312,6 +345,19 @@ export const UploadRecorder = forwardRef<UploadRecorderHandle>(function UploadRe
             )}
           </>
         )}
+
+        {audioDraft.hasAudio ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={recording || exporting}
+            onClick={() => {
+              void downloadDraftSegments();
+            }}
+          >
+            {exporting ? "원본 내려받는 중..." : `구간 원본 다운로드 (${Math.max(audioDraft.segmentCount, 1)}개)`}
+          </Button>
+        ) : null}
 
         {audioDraft.hasAudio ? (
           <Button

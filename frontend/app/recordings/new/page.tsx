@@ -7,8 +7,12 @@ import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
 import { UploadRecorder, type UploadRecorderHandle } from "@/components/upload-recorder";
 import { Button } from "@/components/ui/button";
 import { MarkdownPreview } from "@/components/markdown-preview";
-import { createRecording, hasStoredToken, isAuthRequiredError } from "@/lib/api";
-import { mergeAudioFiles, type MergePhase } from "@/lib/audio-merge";
+import {
+  createMergedRecording,
+  createRecording,
+  hasStoredToken,
+  isAuthRequiredError,
+} from "@/lib/api";
 import {
   clearNewRecordingDraft,
   loadNewRecordingDraftMeta,
@@ -141,6 +145,19 @@ export default function NewRecordingPage() {
         return;
       }
 
+      if (prepared.warnings.length > 0) {
+        const message =
+          `${prepared.warnings.length}개 구간이 디코딩되지 않아 업로드에서 제외됩니다.\n\n` +
+          `${prepared.warnings.join("\n")}\n\n` +
+          `계속 진행할까요?\n` +
+          `(취소하고 "구간 원본 다운로드"로 원본 .webm을 먼저 백업하실 수 있습니다.)`;
+        const confirmed = window.confirm(message);
+        if (!confirmed) {
+          setError("업로드를 취소했습니다. '구간 원본 다운로드'로 백업한 뒤 다시 시도하거나 별도 복구 후 파일 업로드해주세요.");
+          return;
+        }
+      }
+
       const created = await createRecording({
         file: prepared.file,
         source: prepared.source,
@@ -203,35 +220,16 @@ export default function NewRecordingPage() {
     const filesSnapshot = batchFiles;
 
     try {
-      setBatchStatus(`오디오 디코딩 준비 중 (총 ${filesSnapshot.length}개)`);
-      setBatchPercent(2);
-
-      const merged = await mergeAudioFiles(filesSnapshot, {
-        onProgress: (phase: MergePhase, done, total) => {
-          if (phase === "decoding") {
-            const ratio = total > 0 ? done / total : 0;
-            setBatchStatus(`오디오 디코딩 중 (${Math.min(done + 1, total)}/${total})`);
-            setBatchPercent(Math.min(70, Math.round(5 + ratio * 60)));
-          } else if (phase === "merging") {
-            setBatchStatus("순서대로 병합 중...");
-            setBatchPercent(75);
-          } else if (phase === "encoding") {
-            setBatchStatus("WAV 인코딩 중...");
-            setBatchPercent(85);
-          }
-        },
-      });
-
-      setBatchStatus("업로드 중...");
-      setBatchPercent(95);
+      setBatchStatus(`서버로 업로드 중 (총 ${filesSnapshot.length}개, ffmpeg 병합)`);
+      setBatchPercent(20);
 
       const baseName = filesSnapshot[0].name.replace(/\.[^.]+$/, "") || filesSnapshot[0].name;
       const fallbackTitle =
         filesSnapshot.length > 1 ? `${baseName} 외 ${filesSnapshot.length - 1}개 병합` : baseName;
       const finalTitle = title.trim() || fallbackTitle;
 
-      const created = await createRecording({
-        file: merged,
+      const created = await createMergedRecording({
+        files: filesSnapshot,
         source: "upload",
         title: finalTitle,
         noteMd,
@@ -310,8 +308,9 @@ export default function NewRecordingPage() {
           <h2 className="text-lg font-semibold">여러 파일 합쳐서 업로드</h2>
           <p className="mt-1 text-sm text-slate-600">
             추가한 오디오 파일을 위에서 아래 순서대로 하나의 오디오로 합쳐 단일 녹음으로 업로드합니다.
-            결과는 16kHz 모노 WAV로 인코딩되며, 하나의 요약 페이지가 생성됩니다. 제목/폴더/메모는 위
-            입력값을 공유합니다.
+            서버의 ffmpeg가 디코딩/병합하므로 브라우저가 거부하는 잘린 .webm(녹음 중 크래시 등)도
+            대부분 복구됩니다. 결과는 16kHz 모노 WAV로 저장되며, 제목/폴더/메모는 위 입력값을
+            공유합니다.
           </p>
         </div>
 

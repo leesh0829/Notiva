@@ -278,6 +278,38 @@ export async function createRecording(payload: {
   );
 }
 
+export async function createMergedRecording(payload: {
+  files: File[];
+  title?: string;
+  source?: "upload" | "web_record";
+  noteMd?: string;
+  folderName?: string;
+}): Promise<Recording> {
+  const formData = new FormData();
+  for (const file of payload.files) {
+    formData.append("files", file);
+  }
+  if (payload.title) {
+    formData.append("title", payload.title);
+  }
+  if (payload.noteMd) {
+    formData.append("note_md", payload.noteMd);
+  }
+  if (payload.folderName) {
+    formData.append("folder_name", payload.folderName);
+  }
+  formData.append("source", payload.source ?? "upload");
+
+  return request<Recording>(
+    "/recordings/merge",
+    {
+      method: "POST",
+      body: formData,
+    },
+    { timeoutMs: UPLOAD_TIMEOUT_MS },
+  );
+}
+
 export async function getRecording(id: string): Promise<Recording> {
   return request<Recording>(`/recordings/${id}`);
 }

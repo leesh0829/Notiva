@@ -121,8 +121,11 @@ function parseSummarySections(markdown: string): SummarySections {
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith("## ")) {
-      current = titleMap[trimmed.slice(3).trim()] ?? null;
-      continue;
+      const matched = titleMap[trimmed.slice(3).trim()];
+      if (matched !== undefined) {
+        current = matched;
+        continue;
+      }
     }
     if (current) {
       buffers[current].push(line);

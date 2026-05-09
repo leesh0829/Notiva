@@ -457,15 +457,42 @@ function encodeWaveFile(channelData: Float32Array[], sampleRate: number): ArrayB
   return buffer;
 }
 
-async function mergeDraftRecordingSegments(records: DraftAudioBlobRecord[]): Promise<File> {
+async function mergeDraftRecordingSegments(
+  records: DraftAudioBlobRecord[],
+): Promise<{ file: File; warnings: string[] }> {
   const ordered = [...records].sort((left, right) => left.order - right.order);
+  if (ordered.length === 0) {
+    throw new Error("이어붙일 녹음 세그먼트가 없습니다.");
+  }
+
   const AudioContextCtor = getAudioContextConstructor();
   const audioContext = new AudioContextCtor();
 
   try {
-    const decoded = await Promise.all(ordered.map((record) => decodeAudioRecord(record, audioContext)));
+    const settled = await Promise.allSettled(
+      ordered.map((record) => decodeAudioRecord(record, audioContext)),
+    );
+
+    const decoded: AudioBuffer[] = [];
+    const warnings: string[] = [];
+
+    settled.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        decoded.push(result.value);
+      } else {
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        const record = ordered[index];
+        const sizeKb = Math.max(1, Math.round(record.size / 1024));
+        warnings.push(
+          `구간 ${index + 1} (${sizeKb}KB, ${record.mimeType || "audio/webm"}) 디코딩 실패: ${reason}`,
+        );
+      }
+    });
+
     if (decoded.length === 0) {
-      throw new Error("이어붙일 녹음 세그먼트가 없습니다.");
+      throw new Error(
+        `모든 녹음 구간을 디코딩하지 못했습니다. ${warnings.join(" | ")} — "구간 원본 다운로드"로 원본을 백업한 뒤 별도 복구(예: ffmpeg -c copy)가 필요합니다.`,
+      );
     }
 
     const channelCount = Math.max(...decoded.map((buffer) => buffer.numberOfChannels));
@@ -483,22 +510,51 @@ async function mergeDraftRecordingSegments(records: DraftAudioBlobRecord[]): Pro
     });
 
     const wavBuffer = encodeWaveFile(mergedChannels, sampleRate);
-    return new File([wavBuffer], `web-record-${Date.now()}.wav`, { type: "audio/wav" });
+    const file = new File([wavBuffer], `web-record-${Date.now()}.wav`, { type: "audio/wav" });
+    return { file, warnings };
   } finally {
     await audioContext.close().catch(() => undefined);
   }
 }
 
+export interface DraftAudioSegmentExport {
+  index: number;
+  fileName: string;
+  blob: Blob;
+  mimeType: string;
+  size: number;
+  durationMs: number;
+}
+
+export async function exportDraftAudioSegments(): Promise<DraftAudioSegmentExport[]> {
+  const meta = loadNewRecordingDraftMeta();
+  const records = await getDraftAudioRecords(meta);
+  const ordered = [...records].sort((left, right) => left.order - right.order);
+  return ordered.map((record, index) => {
+    const extension = guessExtensionFromMimeType(record.mimeType);
+    const baseName = record.kind === "upload" ? "uploaded" : "web-record-segment";
+    return {
+      index: index + 1,
+      fileName: `${baseName}-${index + 1}.${extension}`,
+      blob: record.blob,
+      mimeType: record.mimeType || "application/octet-stream",
+      size: record.size,
+      durationMs: record.durationMs,
+    };
+  });
+}
+
 export async function buildNewRecordingDraftUpload(): Promise<{
   file: File | null;
   source: DraftAudioSource;
+  warnings: string[];
 }> {
   const meta = loadNewRecordingDraftMeta();
 
   if (meta.audioSource === "upload" && meta.uploadFileId) {
     const record = await getDraftAudioBlobRecord(meta.uploadFileId);
     if (!record) {
-      return { file: null, source: "upload" };
+      return { file: null, source: "upload", warnings: [] };
     }
 
     const fileName =
@@ -511,13 +567,14 @@ export async function buildNewRecordingDraftUpload(): Promise<{
         type: meta.uploadMimeType ?? record.mimeType ?? "application/octet-stream",
       }),
       source: "upload",
+      warnings: [],
     };
   }
 
   if (meta.audioSource === "web_record" && meta.recordingSegmentIds.length > 0) {
     const records = await getDraftAudioBlobRecords(meta.recordingSegmentIds);
     if (records.length === 0) {
-      return { file: null, source: "web_record" };
+      return { file: null, source: "web_record", warnings: [] };
     }
 
     if (records.length === 1) {
@@ -528,17 +585,21 @@ export async function buildNewRecordingDraftUpload(): Promise<{
           type: record.mimeType || "audio/webm",
         }),
         source: "web_record",
+        warnings: [],
       };
     }
 
+    const merged = await mergeDraftRecordingSegments(records);
     return {
-      file: await mergeDraftRecordingSegments(records),
+      file: merged.file,
       source: "web_record",
+      warnings: merged.warnings,
     };
   }
 
   return {
     file: null,
     source: meta.audioSource,
+    warnings: [],
   };
 }

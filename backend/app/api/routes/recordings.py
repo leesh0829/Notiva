@@ -33,9 +33,10 @@ from app.schemas.recording import (
     TranscriptOut,
     TranscriptSegmentsUpdateRequest,
 )
+from app.services.audio_merge import AudioMergeError, merge_audio_files_to_wav
 from app.services.openai_errors import sanitize_provider_error_message
 from app.services.rag import answer_question
-from app.services.storage import delete_object, read_object_bytes, upload_to_s3
+from app.services.storage import delete_object, read_object_bytes, upload_bytes_to_s3, upload_to_s3
 from app.tasks.jobs import enqueue_pipeline, enqueue_summary_refresh
 
 router = APIRouter()
@@ -433,6 +434,55 @@ def create_recording(
     db: Session = Depends(get_db),
 ) -> RecordingOut:
     bucket, key, mime = upload_to_s3(file)
+    recording = Recording(
+        user_id=user_id,
+        title=title,
+        source=source,
+        s3_bucket=bucket,
+        s3_key=key,
+        mime_type=mime,
+        status="uploaded",
+        progress=5,
+        note_md=note_md or "",
+        folder_name=(folder_name or "").strip() or None,
+    )
+    db.add(recording)
+    db.commit()
+    db.refresh(recording)
+    enqueue_pipeline(recording.id)
+    db.refresh(recording)
+    return recording
+
+
+@router.post("/merge", response_model=RecordingOut)
+def create_merged_recording(
+    files: list[UploadFile] = File(...),
+    title: str | None = Form(default=None),
+    source: str = Form(default="upload"),
+    note_md: str = Form(default=""),
+    folder_name: str | None = Form(default=None),
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> RecordingOut:
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="병합할 파일이 없습니다.")
+
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        data = upload.file.read()
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"빈 파일: {upload.filename or '(이름 없음)'}",
+            )
+        payloads.append((upload.filename or "input.bin", data))
+
+    try:
+        merged_bytes = merge_audio_files_to_wav(payloads)
+    except AudioMergeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    bucket, key, mime = upload_bytes_to_s3(merged_bytes, "merged-recording.wav", "audio/wav")
     recording = Recording(
         user_id=user_id,
         title=title,
