@@ -11,6 +11,7 @@ from app.db.models import QAMessage, TranscriptChunk
 from app.schemas.qa import QAResponse
 from app.services.embedding import embed_text
 from app.services.openai_client import get_openai_client
+from app.services.openai_errors import is_insufficient_quota_error
 
 
 def _is_context_limit_error(exc: BadRequestError) -> bool:
@@ -132,6 +133,10 @@ def _llm_answer(question: str, top: list[dict], recent_turns: list[QAMessage]) -
             if next_limit >= len(candidate):
                 raise
             candidate = _truncate_middle(candidate, next_limit)
+        except Exception as exc:
+            if is_insufficient_quota_error(exc):
+                return _fallback_answer(top), list(range(len(top)))
+            raise
     if completion is None:
         return _fallback_answer(top), list(range(len(top)))
     content = completion.choices[0].message.content or "{}"

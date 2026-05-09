@@ -20,6 +20,14 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     openai_stt_model: str = "gpt-4o-mini-transcribe"
+    openai_stt_language: str | None = "ko"
+    openai_stt_prompt: str = (
+        "This audio is primarily Korean meeting speech. Transcribe faithfully in Korean. "
+        "Preserve technical terms, English acronyms, filler words, and sentence endings. "
+        "Do not summarize or omit meaningful speech."
+    )
+    openai_stt_chunk_seconds: int = 420
+    openai_stt_prompt_tail_chars: int = 800
     openai_chat_model: str = "gpt-4.1-mini"
     openai_embed_model: str = "text-embedding-3-small"
     openai_timeout_sec: float = 60.0
@@ -37,7 +45,7 @@ class Settings(BaseSettings):
     qa_history_turns: int = 3
     qa_history_chars_per_turn: int = 280
     summary_map_chunk_chars: int = 1800
-    summary_map_max_chunks: int = 12
+    summary_map_max_chunks: int = 60
     trash_retention_days: int = 7
 
     token_budget_total: int = 2_000_000

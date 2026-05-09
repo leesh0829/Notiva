@@ -142,10 +142,19 @@ export default function DashboardPage() {
     try {
       setBusyId(recordingId);
       setActionError(null);
-      await updateRecordingTitle(recordingId, editingTitle);
+      const updated = await updateRecordingTitle(recordingId, editingTitle);
+      await mutate(
+        (current) =>
+          current
+            ? {
+                ...current,
+                items: current.items.map((item) => (item.id === recordingId ? { ...item, title: updated.title } : item)),
+              }
+            : current,
+        { revalidate: false },
+      );
       setEditingId(null);
       setEditingTitle("");
-      await refreshAll();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "제목 수정에 실패했습니다.");
     } finally {

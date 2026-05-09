@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.models import Transcript, TranscriptChunk
 from app.services.chunking import chunk_transcript_segments
 from app.services.openai_client import get_openai_client
+from app.services.openai_errors import is_insufficient_quota_error
 
 EMBEDDING_BATCH_MAX_CHARS = 6000
 
@@ -37,29 +38,33 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     if not clean:
         return []
     if client is not None:
-        vectors: list[list[float]] = []
-        batch: list[str] = []
-        used_chars = 0
-        for text in clean:
-            # Keep each provider call below safe context size.
-            if batch and used_chars + len(text) > EMBEDDING_BATCH_MAX_CHARS:
+        try:
+            vectors: list[list[float]] = []
+            batch: list[str] = []
+            used_chars = 0
+            for text in clean:
+                # Keep each provider call below safe context size.
+                if batch and used_chars + len(text) > EMBEDDING_BATCH_MAX_CHARS:
+                    response = client.embeddings.create(
+                        model=settings.openai_embed_model,
+                        input=batch,
+                    )
+                    vectors.extend(item.embedding for item in response.data)
+                    batch = []
+                    used_chars = 0
+                batch.append(text)
+                used_chars += len(text)
+
+            if batch:
                 response = client.embeddings.create(
                     model=settings.openai_embed_model,
                     input=batch,
                 )
                 vectors.extend(item.embedding for item in response.data)
-                batch = []
-                used_chars = 0
-            batch.append(text)
-            used_chars += len(text)
-
-        if batch:
-            response = client.embeddings.create(
-                model=settings.openai_embed_model,
-                input=batch,
-            )
-            vectors.extend(item.embedding for item in response.data)
-        return vectors
+            return vectors
+        except Exception as exc:
+            if not is_insufficient_quota_error(exc):
+                raise
     return [deterministic_embedding(text) for text in clean]
 
 

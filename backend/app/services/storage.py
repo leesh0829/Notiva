@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +8,13 @@ from botocore.client import BaseClient
 from fastapi import UploadFile
 
 from app.core.config import settings
+
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def _local_storage_root() -> Path:
+    root = Path(settings.local_storage_dir)
+    return root if root.is_absolute() else (_BACKEND_DIR / root).resolve()
 
 
 def _build_s3_client() -> BaseClient:
@@ -37,10 +44,30 @@ def upload_to_s3(upload: UploadFile) -> tuple[str, str, str]:
         return settings.s3_bucket, key, mime
 
     # Local fallback for fast local dev/smoke test.
-    target = Path(settings.local_storage_dir) / settings.s3_bucket / key
+    target = _local_storage_root() / settings.s3_bucket / key
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
     return settings.s3_bucket, key, mime
+
+
+def upload_bytes_to_s3(payload: bytes, filename: str, content_type: str) -> tuple[str, str, str]:
+    suffix = Path(filename or "audio.bin").suffix
+    key = f"recordings/{uuid4()}{suffix}"
+
+    if settings.s3_enabled:
+        client = _build_s3_client()
+        client.put_object(
+            Bucket=settings.s3_bucket,
+            Key=key,
+            Body=payload,
+            ContentType=content_type,
+        )
+        return settings.s3_bucket, key, content_type
+
+    target = _local_storage_root() / settings.s3_bucket / key
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+    return settings.s3_bucket, key, content_type
 
 
 def read_object_bytes(bucket: str, key: str) -> bytes:
@@ -52,7 +79,7 @@ def read_object_bytes(bucket: str, key: str) -> bytes:
             raise ValueError("Missing S3 object body")
         return body.read()
 
-    source = Path(settings.local_storage_dir) / bucket / key
+    source = _local_storage_root() / bucket / key
     if not source.exists():
         raise FileNotFoundError(f"Object not found: {bucket}/{key}")
     return source.read_bytes()
@@ -64,6 +91,6 @@ def delete_object(bucket: str, key: str) -> None:
         client.delete_object(Bucket=bucket, Key=key)
         return
 
-    source = Path(settings.local_storage_dir) / bucket / key
+    source = _local_storage_root() / bucket / key
     if source.exists():
         source.unlink()

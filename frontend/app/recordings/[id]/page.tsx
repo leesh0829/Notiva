@@ -2,17 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, MoreHorizontal, RotateCcw } from "lucide-react";
+import { Download, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react";
 
 import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
+import { ExpandableMarkdownCard } from "@/components/expandable-markdown-card";
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { ProgressPill } from "@/components/progress-pill";
 import { Button } from "@/components/ui/button";
 import {
   askQuestion,
+  deleteRecordingAudio,
   getQaMessages,
   getRecording,
   getRecordingAudioBlob,
+  regenerateRecordingSummary,
   hasStoredToken,
   isAuthRequiredError,
   getSummary,
@@ -53,6 +56,86 @@ function truncate(text: string, max = 180): string {
   const clean = text.replace(/\s+/g, " ").trim();
   if (clean.length <= max) return clean;
   return `${clean.slice(0, max)}...`;
+}
+
+function sanitizeTranscriptTextForView(text: string): string {
+  const raw = (text || "").trim();
+  if (!raw) return raw;
+  const compact = raw.replace(/\s+/g, "");
+  if (compact.length < 36) return raw;
+  const hasLongRepeat = /([^\s])\1{11,}/.test(compact);
+  if (!hasLongRepeat) return raw;
+  const uniqueRatio = new Set(compact).size / compact.length;
+  if (uniqueRatio > 0.25) return raw;
+  return "[반복 노이즈로 추정되는 구간]";
+}
+
+type SummarySections = {
+  oneLiner: string;
+  overview: string;
+  detailed: string;
+  keyPoints: string;
+  topics: string;
+  decisions: string;
+  openQuestions: string;
+  notableDetails: string;
+};
+
+const EMPTY_SUMMARY_SECTIONS: SummarySections = {
+  oneLiner: "",
+  overview: "",
+  detailed: "",
+  keyPoints: "",
+  topics: "",
+  decisions: "",
+  openQuestions: "",
+  notableDetails: "",
+};
+
+function parseSummarySections(markdown: string): SummarySections {
+  const lines = (markdown || "").replace(/\r/g, "").split("\n");
+  const sections: SummarySections = { ...EMPTY_SUMMARY_SECTIONS };
+  let current: keyof SummarySections | null = null;
+  const buffers: Record<keyof SummarySections, string[]> = {
+    oneLiner: [],
+    overview: [],
+    detailed: [],
+    keyPoints: [],
+    topics: [],
+    decisions: [],
+    openQuestions: [],
+    notableDetails: [],
+  };
+
+  const titleMap: Record<string, keyof SummarySections> = {
+    "한 줄 요약": "oneLiner",
+    "총 요약": "overview",
+    "상세 요약": "detailed",
+    "핵심 포인트": "keyPoints",
+    "주제별 요약": "topics",
+    "결정 사항": "decisions",
+    "열린 질문": "openQuestions",
+    "놓치기 쉬운 세부 내용": "notableDetails",
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("## ")) {
+      const matched = titleMap[trimmed.slice(3).trim()];
+      if (matched !== undefined) {
+        current = matched;
+        continue;
+      }
+    }
+    if (current) {
+      buffers[current].push(line);
+    }
+  }
+
+  (Object.keys(buffers) as Array<keyof SummarySections>).forEach((key) => {
+    sections[key] = buffers[key].join("\n").trim();
+  });
+  return sections;
 }
 
 function exportTextContent(recording: Recording | null, summary: SummaryResponse | null): string {
@@ -170,6 +253,10 @@ async function downloadPdfExport(filenameBase: string, content: string): Promise
   pdf.save(`${filenameBase}.pdf`);
 }
 
+function speakerLabel(speaker?: string | null): string {
+  return speaker?.trim() || "화자 미분류";
+}
+
 export default function RecordingDetailPage({ params }: Props) {
   const router = useRouter();
   const [recording, setRecording] = useState<Recording | null>(null);
@@ -187,12 +274,17 @@ export default function RecordingDetailPage({ params }: Props) {
   const [showSpeaker, setShowSpeaker] = useState(false);
   const [showTimestamp, setShowTimestamp] = useState(true);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioLoadDone, setAudioLoadDone] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [regeneratingSummary, setRegeneratingSummary] = useState(false);
+  const [deletingAudio, setDeletingAudio] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
+  const [refreshSeed, setRefreshSeed] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioLoadingRef = useRef(false);
+  const ownedAudioUrlRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -209,11 +301,45 @@ export default function RecordingDetailPage({ params }: Props) {
   }, [hydrated, router]);
 
   useEffect(() => {
+    return () => {
+      if (ownedAudioUrlRef.current) {
+        URL.revokeObjectURL(ownedAudioUrlRef.current);
+        ownedAudioUrlRef.current = null;
+      }
+    };
+  }, [params.id]);
+
+  useEffect(() => {
     if (!authReady) return;
+    setAudioLoadDone(false);
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
-    let localAudioUrl: string | null = null;
+
+    function loadAudio() {
+      if (ownedAudioUrlRef.current || audioLoadingRef.current) {
+        return;
+      }
+      audioLoadingRef.current = true;
+      void getRecordingAudioBlob(params.id)
+        .then((audioBlob) => {
+          if (cancelled) return;
+          const nextAudioUrl = URL.createObjectURL(audioBlob);
+          if (ownedAudioUrlRef.current) {
+            URL.revokeObjectURL(ownedAudioUrlRef.current);
+          }
+          ownedAudioUrlRef.current = nextAudioUrl;
+          setAudioUrl(nextAudioUrl);
+          setAudioLoadDone(true);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAudioLoadDone(true);
+        })
+        .finally(() => {
+          audioLoadingRef.current = false;
+        });
+    }
 
     async function load() {
       try {
@@ -221,36 +347,34 @@ export default function RecordingDetailPage({ params }: Props) {
         if (cancelled) return;
         setRecording(meta);
         setNoteMd(meta.note_md ?? "");
-
-        if (!localAudioUrl && !audioLoadingRef.current) {
-          audioLoadingRef.current = true;
-          void getRecordingAudioBlob(params.id)
-            .then((audioBlob) => {
-              if (cancelled) return;
-              localAudioUrl = URL.createObjectURL(audioBlob);
-              setAudioUrl(localAudioUrl);
-            })
-            .catch(() => {
-              // Ignore audio load failure in detail page.
-            })
-            .finally(() => {
-              audioLoadingRef.current = false;
-            });
-        }
+        setError(null);
 
         if (meta.status === "ready") {
-          const [nextSummary, nextTranscript, history] = await Promise.all([
-            getSummary(params.id),
-            getTranscript(params.id),
-            getQaMessages(params.id),
-          ]);
-          if (cancelled) return;
-          setSummary(nextSummary);
-          setTranscript(nextTranscript);
-          setQaTurns(history.items);
-          return;
+          try {
+            const [nextSummary, nextTranscript, history] = await Promise.all([
+              getSummary(params.id),
+              getTranscript(params.id),
+              getQaMessages(params.id),
+            ]);
+            if (cancelled) return;
+            setSummary(nextSummary);
+            setTranscript(nextTranscript);
+            setQaTurns(history.items);
+            setError(null);
+            loadAudio();
+            return;
+          } catch (readyErr) {
+            if (isAuthRequiredError(readyErr)) {
+              router.replace("/login");
+              return;
+            }
+            if (cancelled) return;
+            timer = setTimeout(load, 1500);
+            return;
+          }
         }
 
+        loadAudio();
         timer = setTimeout(load, 2500);
       } catch (err) {
         if (isAuthRequiredError(err)) {
@@ -267,20 +391,39 @@ export default function RecordingDetailPage({ params }: Props) {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      if (localAudioUrl) {
-        URL.revokeObjectURL(localAudioUrl);
-      }
     };
-  }, [authReady, params.id, router]);
+  }, [authReady, params.id, refreshSeed, router]);
 
   const canAsk = useMemo(() => recording?.status === "ready", [recording?.status]);
-  const showAnalysisPopup = useMemo(() => {
-    if (!recording) return retrying;
+  const retryDisabled = useMemo(() => {
+    if (!recording) return true;
     return retrying || PROCESSING_STATUSES.includes(recording.status);
   }, [recording, retrying]);
-  const popupStatus: RecordingStatus =
-    retrying && recording?.status === "failed" ? "uploaded" : (recording?.status ?? "uploaded");
-  const popupProgress = retrying && recording?.status === "failed" ? 5 : (recording?.progress ?? 5);
+  const regenerateSummaryDisabled = useMemo(() => {
+    if (!recording) return true;
+    return regeneratingSummary || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, regeneratingSummary]);
+  const showAnalysisPopup = useMemo(() => {
+    if (!recording) return retrying || regeneratingSummary;
+    return retrying || regeneratingSummary || PROCESSING_STATUSES.includes(recording.status);
+  }, [recording, regeneratingSummary, retrying]);
+  const deleteAudioDisabled = useMemo(() => {
+    if (!recording) return true;
+    if (deletingAudio || PROCESSING_STATUSES.includes(recording.status)) return true;
+    return audioLoadDone && !audioUrl;
+  }, [audioLoadDone, audioUrl, deletingAudio, recording]);
+  const popupStatus: RecordingStatus = retrying
+    ? "uploaded"
+    : regeneratingSummary
+      ? "summarizing"
+      : (recording?.status ?? "uploaded");
+  const popupProgress = retrying ? 5 : regeneratingSummary ? 70 : (recording?.progress ?? 5);
+  const summarySections = useMemo(
+    () => parseSummarySections(summary?.summary_md ?? ""),
+    [summary?.summary_md],
+  );
+  const overviewMarkdown = summarySections.overview;
+  const detailedMarkdown = summarySections.detailed;
 
   useEffect(() => {
     if (tab === "qa") {
@@ -330,7 +473,7 @@ export default function RecordingDetailPage({ params }: Props) {
 
   async function onRenameSpeaker(index: number) {
     if (!transcript) return;
-    const current = transcript.segments[index]?.speaker || `화자 ${(index % 2) + 1}`;
+    const current = speakerLabel(transcript.segments[index]?.speaker);
     const next = window.prompt("화자명을 입력하세요", current);
     if (!next || !next.trim()) return;
     const nextSegments = transcript.segments.map((segment, idx) =>
@@ -353,7 +496,7 @@ export default function RecordingDetailPage({ params }: Props) {
   }
 
   async function onRetryAnalysis() {
-    if (!recording || retrying) return;
+    if (!recording || retryDisabled) return;
     try {
       setRetrying(true);
       setError(null);
@@ -364,6 +507,7 @@ export default function RecordingDetailPage({ params }: Props) {
       setQaTurns([]);
       setTab("summary");
       setMenuOpen(false);
+      setRefreshSeed((current) => current + 1);
     } catch (err) {
       if (isAuthRequiredError(err)) {
         router.replace("/login");
@@ -372,6 +516,61 @@ export default function RecordingDetailPage({ params }: Props) {
       setError(err instanceof Error ? err.message : "재분석 요청에 실패했습니다.");
     } finally {
       setRetrying(false);
+    }
+  }
+
+  async function onRegenerateSummary() {
+    if (!recording || regenerateSummaryDisabled) return;
+    try {
+      setRegeneratingSummary(true);
+      setError(null);
+      const updated = await regenerateRecordingSummary(params.id);
+      setRecording(updated);
+      setSummary(null);
+      setTab("summary");
+      setMenuOpen(false);
+      setRefreshSeed((current) => current + 1);
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
+      setError(err instanceof Error ? err.message : "요약 재생성 요청에 실패했습니다.");
+    } finally {
+      setRegeneratingSummary(false);
+    }
+  }
+
+  async function onDeleteAudio() {
+    if (!recording || deleteAudioDisabled) return;
+    const ok = window.confirm(
+      "음성 파일만 삭제하시겠습니까?\n삭제 후에는 플레이어/오디오 다운로드를 사용할 수 없습니다.",
+    );
+    if (!ok) return;
+    try {
+      setDeletingAudio(true);
+      setError(null);
+      await deleteRecordingAudio(params.id);
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      setAudioUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        ownedAudioUrlRef.current = null;
+        return null;
+      });
+      setAudioLoadDone(true);
+      setMenuOpen(false);
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        router.replace("/login");
+        return;
+      }
+      setError(err instanceof Error ? err.message : "음성 파일 삭제에 실패했습니다.");
+    } finally {
+      setDeletingAudio(false);
     }
   }
 
@@ -424,15 +623,37 @@ export default function RecordingDetailPage({ params }: Props) {
             </button>
             {menuOpen ? (
               <div className="absolute right-0 top-11 z-10 w-44 rounded-md border border-slate-200 bg-white p-1 shadow">
-                {recording?.status === "failed" ? (
+                {recording ? (
                   <button
                     type="button"
-                    disabled={retrying}
+                    disabled={retryDisabled}
                     className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                     onClick={() => void onRetryAnalysis()}
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
-                    {retrying ? "재시도 요청 중..." : "AI 재분석 시도"}
+                    {retrying ? "재분석 요청 중..." : "AI 재분석"}
+                  </button>
+                ) : null}
+                {recording ? (
+                  <button
+                    type="button"
+                    disabled={regenerateSummaryDisabled}
+                    className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void onRegenerateSummary()}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {regeneratingSummary ? "요약 재생성 중..." : "요약만 재생성"}
+                  </button>
+                ) : null}
+                {recording ? (
+                  <button
+                    type="button"
+                    disabled={deleteAudioDisabled}
+                    className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void onDeleteAudio()}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deletingAudio ? "음성 삭제 중..." : "음성 파일 삭제"}
                   </button>
                 ) : null}
                 {(["txt", "doc", "hwp", "pdf"] as const).map((ext) => (
@@ -465,6 +686,10 @@ export default function RecordingDetailPage({ params }: Props) {
             <p className="mb-2 text-xs font-semibold text-slate-600">오디오 재생</p>
             <audio ref={audioRef} src={audioUrl} controls className="w-full" />
           </div>
+        ) : audioLoadDone ? (
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="text-sm text-slate-500">오디오 파일이 없거나 삭제되었습니다.</p>
+          </div>
         ) : null}
       </div>
 
@@ -495,12 +720,94 @@ export default function RecordingDetailPage({ params }: Props) {
         <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           {summary ? (
             <>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <p className="mb-3 text-xs font-semibold text-slate-500">요약</p>
-                <div className="mx-auto max-w-none">
-                  <MarkdownPreview markdown={summary.summary_md} className="space-y-4 text-base leading-8" />
+              {summarySections.oneLiner ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="mb-2 text-xs font-semibold text-emerald-700">한 줄 요약</p>
+                  <p className="text-base font-medium leading-7 text-slate-900">{summarySections.oneLiner}</p>
                 </div>
-              </div>
+              ) : null}
+              {summarySections.overview || summarySections.detailed ? (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {summarySections.overview ? (
+                    <div className="relative overflow-hidden rounded-[28px] border border-amber-200/80 bg-[linear-gradient(145deg,rgba(255,251,235,0.98),rgba(255,247,237,0.92))] p-6 shadow-[0_24px_60px_-38px_rgba(180,83,9,0.38)]">
+                      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[radial-gradient(circle_at_top_left,rgba(251,191,36,0.18),transparent_60%)]" />
+                      <div className="relative">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600/80">Overview</p>
+                            <p className="mt-1 text-sm font-semibold text-amber-950">총 요약</p>
+                          </div>
+                          <span className="rounded-full border border-amber-200 bg-white/75 px-3 py-1 text-[11px] font-medium text-amber-700">
+                            핵심 흐름
+                          </span>
+                        </div>
+                        <div className="mt-5 border-t border-amber-200/70 pt-4">
+                          <MarkdownPreview markdown={overviewMarkdown} className="space-y-4 text-[15px] leading-8 text-slate-700" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {summarySections.detailed ? (
+                    <ExpandableMarkdownCard
+                      title="상세 요약"
+                      markdown={detailedMarkdown}
+                      collapsedHeight={560}
+                      className="border-sky-200/80 bg-white shadow-[0_24px_60px_-38px_rgba(14,116,144,0.42)]"
+                    />
+                  ) : null}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="mb-3 text-xs font-semibold text-slate-500">요약</p>
+                  <div className="mx-auto max-w-none">
+                    <MarkdownPreview markdown={summary.summary_md} className="space-y-4 text-base leading-8" />
+                  </div>
+                </div>
+              )}
+              {summarySections.keyPoints || summarySections.topics || summarySections.decisions || summarySections.openQuestions || summarySections.notableDetails ? (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {summarySections.keyPoints ? (
+                    <div className="rounded-xl border border-slate-200 p-4">
+                      <h2 className="text-sm font-semibold text-slate-800">핵심 포인트</h2>
+                      <div className="mt-3">
+                        <MarkdownPreview markdown={summarySections.keyPoints} className="space-y-3 text-[15px] leading-8" />
+                      </div>
+                    </div>
+                  ) : null}
+                  {summarySections.topics ? (
+                    <div className="rounded-xl border border-slate-200 p-4">
+                      <h2 className="text-sm font-semibold text-slate-800">주제별 요약</h2>
+                      <div className="mt-3">
+                        <MarkdownPreview markdown={summarySections.topics} className="space-y-3 text-[15px] leading-8" />
+                      </div>
+                    </div>
+                  ) : null}
+                  {summarySections.decisions ? (
+                    <div className="rounded-xl border border-slate-200 p-4">
+                      <h2 className="text-sm font-semibold text-slate-800">결정 사항</h2>
+                      <div className="mt-3">
+                        <MarkdownPreview markdown={summarySections.decisions} className="space-y-3 text-[15px] leading-8" />
+                      </div>
+                    </div>
+                  ) : null}
+                  {summarySections.openQuestions ? (
+                    <div className="rounded-xl border border-slate-200 p-4">
+                      <h2 className="text-sm font-semibold text-slate-800">열린 질문</h2>
+                      <div className="mt-3">
+                        <MarkdownPreview markdown={summarySections.openQuestions} className="space-y-3 text-[15px] leading-8" />
+                      </div>
+                    </div>
+                  ) : null}
+                  {summarySections.notableDetails ? (
+                    <div className="rounded-xl border border-slate-200 p-4 lg:col-span-2">
+                      <h2 className="text-sm font-semibold text-slate-800">놓치기 쉬운 세부 내용</h2>
+                      <div className="mt-3">
+                        <MarkdownPreview markdown={summarySections.notableDetails} className="space-y-3 text-[15px] leading-8" />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="grid gap-4 lg:grid-cols-2">
                 <div className="rounded-xl border border-slate-200 p-4">
                   <h2 className="text-sm font-semibold text-slate-800">액션 아이템</h2>
@@ -584,12 +891,15 @@ export default function RecordingDetailPage({ params }: Props) {
                           void onRenameSpeaker(idx);
                         }}
                       >
-                        {segment.speaker || `화자 ${(idx % 2) + 1}`}
+                        {speakerLabel(segment.speaker)}
                       </span>
                     ) : null}
                   </div>
                   <div className="space-y-2 border-l-2 border-slate-200 pl-3">
-                    <MarkdownPreview markdown={segment.text} className="space-y-4 break-keep text-[15px] leading-8" />
+                    <MarkdownPreview
+                      markdown={sanitizeTranscriptTextForView(segment.text)}
+                      className="space-y-4 break-words [overflow-wrap:anywhere] text-[15px] leading-8"
+                    />
                   </div>
                 </button>
               ))}

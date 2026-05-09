@@ -33,14 +33,18 @@ from app.schemas.recording import (
     TranscriptOut,
     TranscriptSegmentsUpdateRequest,
 )
+from app.services.audio_merge import AudioMergeError, merge_audio_files_to_wav
+from app.services.openai_errors import sanitize_provider_error_message
 from app.services.rag import answer_question
-from app.services.storage import delete_object, read_object_bytes, upload_to_s3
-from app.tasks.jobs import enqueue_pipeline
+from app.services.storage import delete_object, read_object_bytes, upload_bytes_to_s3, upload_to_s3
+from app.tasks.jobs import enqueue_pipeline, enqueue_summary_refresh
 
 router = APIRouter()
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
+_LONG_REPEAT_CHAR_PATTERN = re.compile(r"([^\s])\1{11,}")
 _SEGMENT_TARGET_CHARS = 260
 _SEGMENT_MAX_CHARS = 420
+_IN_PROGRESS_STATUSES = {"uploaded", "transcribing", "transcribed", "summarizing", "indexing"}
 
 
 def _estimate_tokens(text: str) -> int:
@@ -99,8 +103,6 @@ def _coerce_segment(segment: dict, idx: int) -> dict:
     speaker = segment.get("speaker")
     if speaker is not None:
         speaker = str(speaker).strip() or None
-    if not speaker:
-        speaker = f"화자 {(idx % 2) + 1}"
     return {"start_ms": start_ms, "end_ms": end_ms, "text": text, "speaker": speaker}
 
 
@@ -108,10 +110,13 @@ def _collapse_repeated_units(text: str) -> str:
     normalized = " ".join((text or "").split()).strip()
     if not normalized:
         return ""
+    normalized = _strip_low_information_noise(normalized)
+    if not normalized:
+        return ""
     normalized = _collapse_repeated_token_phrases(normalized)
     units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(normalized) if unit.strip()]
     if len(units) < 2:
-        return normalized
+        return _strip_low_information_noise(normalized)
     compact: list[str] = []
     last_key = ""
     for unit in units:
@@ -121,7 +126,20 @@ def _collapse_repeated_units(text: str) -> str:
         compact.append(unit)
         last_key = key
     collapsed = " ".join(compact) if compact else normalized
-    return _collapse_repeated_token_phrases(collapsed)
+    collapsed = _collapse_repeated_token_phrases(collapsed)
+    return _strip_low_information_noise(collapsed)
+
+
+def _strip_low_information_noise(text: str) -> str:
+    compact = "".join((text or "").split())
+    if len(compact) < 36:
+        return text
+    if not _LONG_REPEAT_CHAR_PATTERN.search(compact):
+        return text
+    unique_ratio = len(set(compact)) / max(1, len(compact))
+    if unique_ratio > 0.25:
+        return text
+    return ""
 
 
 def _collapse_repeated_token_phrases(text: str) -> str:
@@ -436,13 +454,63 @@ def create_recording(
     return recording
 
 
+@router.post("/merge", response_model=RecordingOut)
+def create_merged_recording(
+    files: list[UploadFile] = File(...),
+    title: str | None = Form(default=None),
+    source: str = Form(default="upload"),
+    note_md: str = Form(default=""),
+    folder_name: str | None = Form(default=None),
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> RecordingOut:
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="병합할 파일이 없습니다.")
+
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        data = upload.file.read()
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"빈 파일: {upload.filename or '(이름 없음)'}",
+            )
+        payloads.append((upload.filename or "input.bin", data))
+
+    try:
+        merged_bytes = merge_audio_files_to_wav(payloads)
+    except AudioMergeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    bucket, key, mime = upload_bytes_to_s3(merged_bytes, "merged-recording.wav", "audio/wav")
+    recording = Recording(
+        user_id=user_id,
+        title=title,
+        source=source,
+        s3_bucket=bucket,
+        s3_key=key,
+        mime_type=mime,
+        status="uploaded",
+        progress=5,
+        note_md=note_md or "",
+        folder_name=(folder_name or "").strip() or None,
+    )
+    db.add(recording)
+    db.commit()
+    db.refresh(recording)
+    enqueue_pipeline(recording.id)
+    db.refresh(recording)
+    return recording
+
+
 @router.get("/{recording_id}", response_model=RecordingDetailOut)
 def get_recording(
     recording_id: str,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> RecordingDetailOut:
-    return _get_owned_recording(db, recording_id, user_id)
+    detail = RecordingDetailOut.model_validate(_get_owned_recording(db, recording_id, user_id))
+    return detail.model_copy(update={"error_message": sanitize_provider_error_message(detail.error_message)})
 
 
 @router.post("/{recording_id}/retry", response_model=RecordingOut)
@@ -454,8 +522,8 @@ def retry_recording_analysis(
     recording = _get_owned_recording(db, recording_id, user_id)
     if recording.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be retried")
-    if recording.status != "failed":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Retry is only available for failed status")
+    if recording.status in _IN_PROGRESS_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
 
     recording.status = "uploaded"
     recording.progress = 5
@@ -464,6 +532,33 @@ def retry_recording_analysis(
     db.refresh(recording)
 
     enqueue_pipeline(recording.id)
+    db.refresh(recording)
+    return recording
+
+
+@router.post("/{recording_id}/summary/regenerate", response_model=RecordingOut)
+def regenerate_summary(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> RecordingOut:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    if recording.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be retried")
+    if recording.status in _IN_PROGRESS_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
+
+    transcript_exists = db.query(Transcript.id).filter(Transcript.recording_id == recording_id).first() is not None
+    if not transcript_exists:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Transcript not ready")
+
+    recording.status = "summarizing"
+    recording.progress = 70
+    recording.error_message = None
+    db.commit()
+    db.refresh(recording)
+
+    enqueue_summary_refresh(recording.id)
     db.refresh(recording)
     return recording
 
@@ -569,13 +664,34 @@ def get_audio(
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     recording = _get_owned_recording(db, recording_id, user_id)
-    payload = read_object_bytes(recording.s3_bucket, recording.s3_key)
+    try:
+        payload = read_object_bytes(recording.s3_bucket, recording.s3_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio not found") from exc
     filename = _recording_label(recording).replace(" ", "_")
     encoded_filename = quote(filename, safe="")
     headers = {
         "Content-Disposition": f'inline; filename="{recording.id}"; filename*=UTF-8\'\'{encoded_filename}'
     }
     return StreamingResponse(io.BytesIO(payload), media_type=recording.mime_type, headers=headers)
+
+
+@router.delete("/{recording_id}/audio", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_audio(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    recording = _get_owned_recording(db, recording_id, user_id)
+    if recording.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deleted recording cannot be modified")
+    if recording.status in _IN_PROGRESS_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis is already in progress")
+    try:
+        delete_object(recording.s3_bucket, recording.s3_key)
+    except Exception:
+        pass
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{recording_id}/transcript", response_model=TranscriptOut)

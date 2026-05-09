@@ -9,12 +9,14 @@ from openai import BadRequestError
 
 from app.core.config import settings
 from app.services.openai_client import get_openai_client
+from app.services.openai_errors import is_insufficient_quota_error, quota_transcript_notice
 from app.services.storage import read_object_bytes
 
 MAX_STT_FILE_BYTES = 24 * 1024 * 1024
-CHUNK_SECONDS = 15 * 60
+CHUNK_BITRATE = "64k"
 _DURATION_PATTERN = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _UNIT_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|(?<=[,，])\s+")
+_LONG_REPEAT_CHAR_PATTERN = re.compile(r"([^\s])\1{11,}")
 _SEGMENT_TARGET_CHARS = 260
 _SEGMENT_MAX_CHARS = 420
 
@@ -26,6 +28,11 @@ def _placeholder_transcription() -> tuple[str, list[dict], str]:
         {"start_ms": 86000, "end_ms": 128000, "text": "다음 주 데모 전까지 API 통합 테스트를 완료하기로 결정했습니다."},
     ]
     return " ".join(segment["text"] for segment in segments), segments, "ko"
+
+
+def _quota_fallback_transcription() -> tuple[str, list[dict], str]:
+    text = quota_transcript_notice()
+    return text, [{"start_ms": 0, "end_ms": 0, "text": text}], "ko"
 
 
 def _guess_mime(suffix: str) -> str:
@@ -49,14 +56,52 @@ def _is_invalid_audio_error(exc: BadRequestError) -> bool:
     return (
         "audio file might be corrupted or unsupported" in message
         or ("invalid_value" in message and "param" in message and "file" in message)
+        or _is_audio_duration_limit_error(message)
     )
 
 
-def _transcribe_once(client, payload: bytes, filename: str, mime: str):
+def _is_audio_duration_limit_error(message: str) -> bool:
+    normalized = (message or "").lower()
+    return (
+        "audio duration" in normalized
+        and "longer than" in normalized
+        and "maximum for this model" in normalized
+    )
+
+
+def _chunk_seconds() -> int:
+    return max(120, int(settings.openai_stt_chunk_seconds or 420))
+
+
+def _transcription_prompt(previous_tail: str = "") -> str | None:
+    parts: list[str] = []
+    base_prompt = (settings.openai_stt_prompt or "").strip()
+    if base_prompt:
+        parts.append(base_prompt)
+    tail_limit = max(0, int(settings.openai_stt_prompt_tail_chars or 0))
+    if previous_tail and tail_limit > 0:
+        tail = previous_tail.strip()
+        if len(tail) > tail_limit:
+            tail = tail[-tail_limit:].lstrip()
+        if tail:
+            parts.append(f"Previous transcript context:\n{tail}")
+    prompt = "\n\n".join(parts).strip()
+    return prompt or None
+
+
+def _transcribe_once(client, payload: bytes, filename: str, mime: str, prompt: str | None = None):
+    request_kwargs = {
+        "model": settings.openai_stt_model,
+        "file": (filename, payload, mime),
+    }
+    if settings.openai_stt_language:
+        request_kwargs["language"] = settings.openai_stt_language
+    if prompt:
+        request_kwargs["prompt"] = prompt
+
     try:
         return client.audio.transcriptions.create(
-            model=settings.openai_stt_model,
-            file=(filename, payload, mime),
+            **request_kwargs,
             response_format="json",
         )
     except BadRequestError as exc:
@@ -64,8 +109,7 @@ def _transcribe_once(client, payload: bytes, filename: str, mime: str):
             raise
         # Some model revisions only accept text output.
         return client.audio.transcriptions.create(
-            model=settings.openai_stt_model,
-            file=(filename, payload, mime),
+            **request_kwargs,
             response_format="text",
         )
 
@@ -84,6 +128,27 @@ def _duration_ms_with_ffmpeg(ffmpeg_exe: str, file_path: Path) -> int:
     minutes = int(match.group(2))
     seconds = float(match.group(3))
     return int(((hours * 60 * 60) + (minutes * 60) + seconds) * 1000)
+
+
+def _probe_duration_ms(payload: bytes, suffix: str) -> int:
+    try:
+        import imageio_ffmpeg
+    except Exception:
+        return 0
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory(prefix="notiva-stt-probe-") as tmpdir:
+        input_path = Path(tmpdir) / f"input{suffix}"
+        input_path.write_bytes(payload)
+        return _duration_ms_with_ffmpeg(ffmpeg_exe, input_path)
+
+
+def _should_chunk_audio(payload: bytes, duration_ms: int) -> bool:
+    if len(payload) > MAX_STT_FILE_BYTES:
+        return True
+    if duration_ms <= 0:
+        return False
+    return duration_ms > (_chunk_seconds() * 1000)
 
 
 def _extract_text_language_segments(result) -> tuple[str, str, list[dict]]:
@@ -131,10 +196,13 @@ def _collapse_repeated_units(text: str) -> str:
     normalized = " ".join((text or "").split()).strip()
     if not normalized:
         return ""
+    normalized = _strip_low_information_noise(normalized)
+    if not normalized:
+        return ""
     normalized = _collapse_repeated_token_phrases(normalized)
     units = [unit.strip() for unit in _UNIT_SPLIT_PATTERN.split(normalized) if unit.strip()]
     if len(units) < 2:
-        return normalized
+        return _strip_low_information_noise(normalized)
     compact: list[str] = []
     last_key = ""
     for unit in units:
@@ -144,7 +212,20 @@ def _collapse_repeated_units(text: str) -> str:
         compact.append(unit)
         last_key = key
     collapsed = " ".join(compact) if compact else normalized
-    return _collapse_repeated_token_phrases(collapsed)
+    collapsed = _collapse_repeated_token_phrases(collapsed)
+    return _strip_low_information_noise(collapsed)
+
+
+def _strip_low_information_noise(text: str) -> str:
+    compact = "".join((text or "").split())
+    if len(compact) < 36:
+        return text
+    if not _LONG_REPEAT_CHAR_PATTERN.search(compact):
+        return text
+    unique_ratio = len(set(compact)) / max(1, len(compact))
+    if unique_ratio > 0.25:
+        return text
+    return ""
 
 
 def _collapse_repeated_token_phrases(text: str) -> str:
@@ -268,6 +349,8 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
     full_text_parts: list[str] = []
     offset_ms = 0
     language = "unknown"
+    previous_tail = ""
+    chunk_seconds = _chunk_seconds()
 
     with tempfile.TemporaryDirectory(prefix="notiva-stt-") as tmpdir:
         tmp = Path(tmpdir)
@@ -291,11 +374,11 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
                 "-c:a",
                 "libmp3lame",
                 "-b:a",
-                "32k",
+                CHUNK_BITRATE,
                 "-f",
                 "segment",
                 "-segment_time",
-                str(CHUNK_SECONDS),
+                str(chunk_seconds),
                 "-reset_timestamps",
                 "1",
                 str(chunk_pattern),
@@ -311,9 +394,15 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
         for chunk_file in chunk_files:
             duration_ms = _duration_ms_with_ffmpeg(ffmpeg_exe, chunk_file)
             if duration_ms <= 0:
-                duration_ms = CHUNK_SECONDS * 1000
+                duration_ms = chunk_seconds * 1000
             chunk_bytes = chunk_file.read_bytes()
-            result = _transcribe_once(client, chunk_bytes, chunk_file.name, "audio/mpeg")
+            result = _transcribe_once(
+                client,
+                chunk_bytes,
+                chunk_file.name,
+                "audio/mpeg",
+                prompt=_transcription_prompt(previous_tail),
+            )
             text, chunk_language, chunk_segments = _extract_text_language_segments(result)
             if chunk_language and chunk_language != "unknown":
                 language = chunk_language
@@ -333,6 +422,7 @@ def _transcribe_large_audio(client, payload: bytes, suffix: str) -> tuple[str, l
                 all_segments.extend(shifted)
             if text:
                 full_text_parts.append(text)
+                previous_tail = text
 
             if duration_ms <= 0 and chunk_segments:
                 duration_ms = max(segment["end_ms"] for segment in chunk_segments)
@@ -355,20 +445,27 @@ def run_transcription(bucket: str, key: str) -> tuple[str, list[dict], str]:
     suffix = Path(key).suffix or ".wav"
     filename = f"audio{suffix}"
     mime = _guess_mime(suffix)
+    duration_ms = _probe_duration_ms(payload, suffix)
+    prompt = _transcription_prompt()
 
-    # Provider-side file-size restrictions apply to direct uploads.
-    if len(payload) > MAX_STT_FILE_BYTES:
-        text, segments, language = _transcribe_large_audio(client, payload, suffix)
-    else:
-        # Use bytes upload to avoid Windows temp-file lock issues.
-        try:
-            result = _transcribe_once(client, payload, filename, mime)
-        except BadRequestError as exc:
-            if not _is_invalid_audio_error(exc):
-                raise
+    try:
+        # Provider-side file-size restrictions apply to direct uploads.
+        if _should_chunk_audio(payload, duration_ms):
             text, segments, language = _transcribe_large_audio(client, payload, suffix)
         else:
-            text, language, segments = _extract_text_language_segments(result)
+            # Use bytes upload to avoid Windows temp-file lock issues.
+            try:
+                result = _transcribe_once(client, payload, filename, mime, prompt=prompt)
+            except BadRequestError as exc:
+                if not _is_invalid_audio_error(exc):
+                    raise
+                text, segments, language = _transcribe_large_audio(client, payload, suffix)
+            else:
+                text, language, segments = _extract_text_language_segments(result)
+    except Exception as exc:
+        if not is_insufficient_quota_error(exc):
+            raise
+        return _quota_fallback_transcription()
 
     if not text and segments:
         text = " ".join(item["text"] for item in segments)
