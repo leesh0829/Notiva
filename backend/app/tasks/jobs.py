@@ -80,6 +80,10 @@ def transcribe_task(recording_id: str) -> str:
                 )
             )
 
+        derived_duration_ms = max((int(seg.get("end_ms") or 0) for seg in (segments or [])), default=0)
+        if derived_duration_ms > 0:
+            recording.duration_ms = derived_duration_ms
+
         _update_status(recording, RecordingStatus.TRANSCRIBED, 45)
         db.commit()
         return recording_id

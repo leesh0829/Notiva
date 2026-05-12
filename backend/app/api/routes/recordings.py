@@ -51,7 +51,19 @@ def _estimate_tokens(text: str) -> int:
     clean = text.strip()
     if not clean:
         return 0
-    return max(1, len(clean) // 4)
+    cjk = sum(1 for ch in clean if "가" <= ch <= "힣" or "぀" <= ch <= "ヿ" or "一" <= ch <= "鿿")
+    other = len(clean) - cjk
+    # GPT tokenizer: ~1.5 chars/token for CJK, ~4 chars/token for Latin/ASCII.
+    return max(1, int(round(cjk / 1.5 + other / 4)))
+
+
+def _transcript_duration_ms(transcript: Transcript | None) -> int:
+    if transcript is None or not transcript.segments:
+        return 0
+    try:
+        return max(int(seg.get("end_ms") or 0) for seg in transcript.segments)
+    except Exception:
+        return 0
 
 
 def _recording_label(recording: Recording) -> str:
@@ -349,11 +361,10 @@ def get_usage(
 
         chat_input_tokens = stt_tokens + qa_input_tokens
         chat_output_tokens = summary_tokens + qa_output_tokens
-        stt_cost = (
-            (float(recording.duration_ms) / 60000.0) * settings.price_stt_per_minute
-            if recording.duration_ms
-            else (stt_tokens / 1000.0) * (settings.price_stt_per_minute / 10.0)
-        )
+        duration_ms = int(recording.duration_ms or 0) or _transcript_duration_ms(transcript)
+        if duration_ms and not recording.duration_ms:
+            recording.duration_ms = duration_ms
+        stt_cost = (duration_ms / 60000.0) * settings.price_stt_per_minute
         estimated_cost_usd = (
             stt_cost
             + (chat_input_tokens / 1_000_000.0) * settings.price_chat_input_per_1m
@@ -375,6 +386,9 @@ def get_usage(
                 estimated_cost_usd=round(estimated_cost_usd, 6),
             )
         )
+
+    if db.dirty:
+        db.commit()
 
     used_tokens = sum(item.total_tokens for item in items)
     used_usd = sum(item.estimated_cost_usd for item in items)
