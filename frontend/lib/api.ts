@@ -36,14 +36,23 @@ export function getStoredToken(): string {
   return window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? DEV_TOKEN;
 }
 
+export const AUTH_CHANGED_EVENT = "notiva:auth-changed";
+
+function emitAuthChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+}
+
 export function setStoredToken(token: string): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  emitAuthChanged();
 }
 
 export function clearStoredToken(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  emitAuthChanged();
 }
 
 export function hasStoredToken(): boolean {

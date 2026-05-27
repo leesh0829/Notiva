@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Download, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react";
 
 import { AnalysisProgressPopup } from "@/components/analysis-progress-popup";
-import { ExpandableMarkdownCard } from "@/components/expandable-markdown-card";
 import { MarkdownPreview } from "@/components/markdown-preview";
 import { ProgressPill } from "@/components/progress-pill";
 import { Button } from "@/components/ui/button";
@@ -70,72 +69,24 @@ function sanitizeTranscriptTextForView(text: string): string {
   return "[반복 노이즈로 추정되는 구간]";
 }
 
-type SummarySections = {
-  oneLiner: string;
-  overview: string;
-  detailed: string;
-  keyPoints: string;
-  topics: string;
-  decisions: string;
-  openQuestions: string;
-  notableDetails: string;
-};
-
-const EMPTY_SUMMARY_SECTIONS: SummarySections = {
-  oneLiner: "",
-  overview: "",
-  detailed: "",
-  keyPoints: "",
-  topics: "",
-  decisions: "",
-  openQuestions: "",
-  notableDetails: "",
-};
-
-function parseSummarySections(markdown: string): SummarySections {
+function extractOneLiner(markdown: string): string {
   const lines = (markdown || "").replace(/\r/g, "").split("\n");
-  const sections: SummarySections = { ...EMPTY_SUMMARY_SECTIONS };
-  let current: keyof SummarySections | null = null;
-  const buffers: Record<keyof SummarySections, string[]> = {
-    oneLiner: [],
-    overview: [],
-    detailed: [],
-    keyPoints: [],
-    topics: [],
-    decisions: [],
-    openQuestions: [],
-    notableDetails: [],
-  };
-
-  const titleMap: Record<string, keyof SummarySections> = {
-    "한 줄 요약": "oneLiner",
-    "총 요약": "overview",
-    "상세 요약": "detailed",
-    "핵심 포인트": "keyPoints",
-    "주제별 요약": "topics",
-    "결정 사항": "decisions",
-    "열린 질문": "openQuestions",
-    "놓치기 쉬운 세부 내용": "notableDetails",
-  };
-
+  let inOneLiner = false;
+  const collected: string[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith("## ")) {
-      const matched = titleMap[trimmed.slice(3).trim()];
-      if (matched !== undefined) {
-        current = matched;
-        continue;
+      if (inOneLiner) break;
+      if (trimmed.slice(3).trim() === "한 줄 요약") {
+        inOneLiner = true;
       }
+      continue;
     }
-    if (current) {
-      buffers[current].push(line);
+    if (inOneLiner && trimmed) {
+      collected.push(trimmed.replace(/^[-*+]\s+/, ""));
     }
   }
-
-  (Object.keys(buffers) as Array<keyof SummarySections>).forEach((key) => {
-    sections[key] = buffers[key].join("\n").trim();
-  });
-  return sections;
+  return collected.join(" ").trim();
 }
 
 function exportTextContent(recording: Recording | null, summary: SummaryResponse | null): string {
@@ -418,12 +369,8 @@ export default function RecordingDetailPage({ params }: Props) {
       ? "summarizing"
       : (recording?.status ?? "uploaded");
   const popupProgress = retrying ? 5 : regeneratingSummary ? 70 : (recording?.progress ?? 5);
-  const summarySections = useMemo(
-    () => parseSummarySections(summary?.summary_md ?? ""),
-    [summary?.summary_md],
-  );
-  const overviewMarkdown = summarySections.overview;
-  const detailedMarkdown = summarySections.detailed;
+  const summaryMarkdown = summary?.summary_md ?? "";
+  const oneLiner = useMemo(() => extractOneLiner(summaryMarkdown), [summaryMarkdown]);
 
   useEffect(() => {
     if (tab === "qa") {
@@ -720,94 +667,15 @@ export default function RecordingDetailPage({ params }: Props) {
         <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           {summary ? (
             <>
-              {summarySections.oneLiner ? (
+              {oneLiner ? (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                   <p className="mb-2 text-xs font-semibold text-emerald-700">한 줄 요약</p>
-                  <p className="text-base font-medium leading-7 text-slate-900">{summarySections.oneLiner}</p>
+                  <p className="text-base font-medium leading-7 text-slate-900">{oneLiner}</p>
                 </div>
               ) : null}
-              {summarySections.overview || summarySections.detailed ? (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {summarySections.overview ? (
-                    <div className="relative overflow-hidden rounded-[28px] border border-amber-200/80 bg-[linear-gradient(145deg,rgba(255,251,235,0.98),rgba(255,247,237,0.92))] p-6 shadow-[0_24px_60px_-38px_rgba(180,83,9,0.38)]">
-                      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[radial-gradient(circle_at_top_left,rgba(251,191,36,0.18),transparent_60%)]" />
-                      <div className="relative">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-600/80">Overview</p>
-                            <p className="mt-1 text-sm font-semibold text-amber-950">총 요약</p>
-                          </div>
-                          <span className="rounded-full border border-amber-200 bg-white/75 px-3 py-1 text-[11px] font-medium text-amber-700">
-                            핵심 흐름
-                          </span>
-                        </div>
-                        <div className="mt-5 border-t border-amber-200/70 pt-4">
-                          <MarkdownPreview markdown={overviewMarkdown} className="space-y-4 text-[15px] leading-8 text-slate-700" />
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                  {summarySections.detailed ? (
-                    <ExpandableMarkdownCard
-                      title="상세 요약"
-                      markdown={detailedMarkdown}
-                      collapsedHeight={560}
-                      className="border-sky-200/80 bg-white shadow-[0_24px_60px_-38px_rgba(14,116,144,0.42)]"
-                    />
-                  ) : null}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="mb-3 text-xs font-semibold text-slate-500">요약</p>
-                  <div className="mx-auto max-w-none">
-                    <MarkdownPreview markdown={summary.summary_md} className="space-y-4 text-base leading-8" />
-                  </div>
-                </div>
-              )}
-              {summarySections.keyPoints || summarySections.topics || summarySections.decisions || summarySections.openQuestions || summarySections.notableDetails ? (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {summarySections.keyPoints ? (
-                    <div className="rounded-xl border border-slate-200 p-4">
-                      <h2 className="text-sm font-semibold text-slate-800">핵심 포인트</h2>
-                      <div className="mt-3">
-                        <MarkdownPreview markdown={summarySections.keyPoints} className="space-y-3 text-[15px] leading-8" />
-                      </div>
-                    </div>
-                  ) : null}
-                  {summarySections.topics ? (
-                    <div className="rounded-xl border border-slate-200 p-4">
-                      <h2 className="text-sm font-semibold text-slate-800">주제별 요약</h2>
-                      <div className="mt-3">
-                        <MarkdownPreview markdown={summarySections.topics} className="space-y-3 text-[15px] leading-8" />
-                      </div>
-                    </div>
-                  ) : null}
-                  {summarySections.decisions ? (
-                    <div className="rounded-xl border border-slate-200 p-4">
-                      <h2 className="text-sm font-semibold text-slate-800">결정 사항</h2>
-                      <div className="mt-3">
-                        <MarkdownPreview markdown={summarySections.decisions} className="space-y-3 text-[15px] leading-8" />
-                      </div>
-                    </div>
-                  ) : null}
-                  {summarySections.openQuestions ? (
-                    <div className="rounded-xl border border-slate-200 p-4">
-                      <h2 className="text-sm font-semibold text-slate-800">열린 질문</h2>
-                      <div className="mt-3">
-                        <MarkdownPreview markdown={summarySections.openQuestions} className="space-y-3 text-[15px] leading-8" />
-                      </div>
-                    </div>
-                  ) : null}
-                  {summarySections.notableDetails ? (
-                    <div className="rounded-xl border border-slate-200 p-4 lg:col-span-2">
-                      <h2 className="text-sm font-semibold text-slate-800">놓치기 쉬운 세부 내용</h2>
-                      <div className="mt-3">
-                        <MarkdownPreview markdown={summarySections.notableDetails} className="space-y-3 text-[15px] leading-8" />
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
+              <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <MarkdownPreview markdown={summaryMarkdown} className="space-y-3 text-[15px] leading-8 text-slate-800" />
+              </article>
               <div className="grid gap-4 lg:grid-cols-2">
                 <div className="rounded-xl border border-slate-200 p-4">
                   <h2 className="text-sm font-semibold text-slate-800">액션 아이템</h2>

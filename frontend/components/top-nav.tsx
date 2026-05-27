@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
 
-import { hasStoredToken, listFolders, logout } from "@/lib/api";
+import { AUTH_CHANGED_EVENT, hasStoredToken, listFolders, logout } from "@/lib/api";
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -26,9 +26,11 @@ export function TopNav() {
     syncAuth();
     window.addEventListener("popstate", sync);
     window.addEventListener("storage", syncAuth);
+    window.addEventListener(AUTH_CHANGED_EVENT, syncAuth);
     return () => {
       window.removeEventListener("popstate", sync);
       window.removeEventListener("storage", syncAuth);
+      window.removeEventListener(AUTH_CHANGED_EVENT, syncAuth);
     };
   }, []);
 
